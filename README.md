@@ -10,13 +10,15 @@ This repository contains:
 
 - reference QEMU and UKI helper scripts from the working lab
 - the current `load_key` hook used for `clevis`
-- documentation for the boot model, operator interaction, build flow, installation, and self-test
+- documentation for the boot model, threat model, kernel command line contract, operator interaction, build flow, installation, and self-test
 
 The `lab/` scripts are snapshots from the validated OpenWrt build tree. They are kept here for reference and reuse, but the validated execution still happened inside the OpenWrt source tree with its `build_dir`, `staging_dir`, kernel, and package outputs present.
 
 ## Repo layout
 
 - [docs/architecture.md](docs/architecture.md): boot model, relation to `rEFInd`, runtime components, user interaction
+- [docs/threat-model.md](docs/threat-model.md): assumptions, protected assets, defended and non-defended threats
+- [docs/kcl-options.md](docs/kcl-options.md): full list of `kcl` options consumed by the package
 - [docs/build-and-install.md](docs/build-and-install.md): build flow, UKI generation, `rEFInd` setup, installation notes
 - [docs/operation-and-selftest.md](docs/operation-and-selftest.md): exact QEMU test procedure and expected operator actions
 - [docs/jwe-backends.md](docs/jwe-backends.md): validated `JWE` storage backends: `zfs`, `efi`, `vfat`
@@ -67,3 +69,11 @@ zbm-start
 On the next cold boot, the same path should go to Ubuntu automatically.
 
 The full procedure, including `efi` and `vfat` backends, is documented in [docs/operation-and-selftest.md](docs/operation-and-selftest.md).
+
+For real machines, use a manual `rEFInd` `menuentry` with an `options` line in
+`refind.conf`. The current UKI flow does not consume `refind_linux.conf`.
+
+If you put security-relevant policy into external `rEFInd` kernel command line
+parameters, read [docs/threat-model.md](docs/threat-model.md) and
+[docs/kcl-options.md](docs/kcl-options.md) first. The measured surface depends
+on the PCR set you actually bind in `clevis.pcr_ids`.

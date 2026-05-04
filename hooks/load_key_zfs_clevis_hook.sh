@@ -42,6 +42,85 @@ CLEVIS_CHECK_4=""
 CLEVIS_CHECK_5=""
 CLEVIS_CHECK_7=""
 CLEVIS_CHECK_9=""
+CLEVIS_HOOK_LOG=/tmp/load-key-clevis-hook.log
+
+init_hook_log()
+{
+  : > "${CLEVIS_HOOK_LOG}" 2>/dev/null || true
+  chmod 0600 "${CLEVIS_HOOK_LOG}" 2>/dev/null || true
+}
+
+log_hook()
+{
+  local level pri msg
+
+  level="${1:-notice}"
+  msg="${2:-}"
+
+  [ -n "${msg}" ] || return 0
+  printf '%s\n' "${msg}" >> "${CLEVIS_HOOK_LOG}" 2>/dev/null || true
+
+  if command -v logger >/dev/null 2>&1; then
+    logger -t zbm-clevis-hook -- "${msg}" 2>/dev/null || true
+  fi
+
+  case "${level}" in
+    debug) pri=7 ;;
+    info|notice) pri=6 ;;
+    warn|warning) pri=4 ;;
+    err|error) pri=3 ;;
+    *) pri=5 ;;
+  esac
+
+  printf '<%s>%s\n' "${pri}" "[zbm-clevis-hook] ${msg}" >/dev/kmsg 2>/dev/null || true
+}
+
+clevis_decrypt_to_file()
+{
+  local payload="$1"
+  local outfile="$2"
+
+  printf '%s' "${payload}" | clevis decrypt > "${outfile}" 2>>"${CLEVIS_HOOK_LOG}"
+}
+
+clevis_decrypt_check()
+{
+  local payload="$1"
+
+  printf '%s' "${payload}" | clevis decrypt > /dev/null 2>>"${CLEVIS_HOOK_LOG}"
+}
+
+zfs_load_key_check_file()
+{
+  local dataset="$1"
+  local path="$2"
+
+  zfs load-key -L "file://${path}" -n "${dataset}" > /dev/null 2>>"${CLEVIS_HOOK_LOG}"
+}
+
+zfs_load_key_check_prompt()
+{
+  local dataset="$1"
+  local pass="$2"
+
+  printf '%s' "${pass}" | zfs load-key -n -L prompt "${dataset}" > /dev/null 2>>"${CLEVIS_HOOK_LOG}"
+}
+
+pcr_check_status()
+{
+  local payload="$1"
+
+  [ -n "${payload}" ] || {
+    printf '%s' '-'
+    return 0
+  }
+
+  if clevis_decrypt_check "${payload}"; then
+    printf '%s' 'OK'
+  else
+    printf '%s' 'FAIL'
+  fi
+}
 
 kcl_get()
 {
@@ -64,6 +143,12 @@ kcl_get()
                         clevis.host)
                                 [ -n "${ZBM_HOST:-}" ] && { printf '%s' "${ZBM_HOST}"; return 0; }
                                 ;;
+                        clevis.CHAT_ID)
+                                [ -n "${ZBM_CLEVIS_CHAT_ID:-}" ] && { printf '%s' "${ZBM_CLEVIS_CHAT_ID}"; return 0; }
+                                ;;
+                        clevis.API_TOKEN)
+                                [ -n "${ZBM_CLEVIS_API_TOKEN:-}" ] && { printf '%s' "${ZBM_CLEVIS_API_TOKEN}"; return 0; }
+                                ;;
                 esac
 
                 value="$(awk -v key="${key}" '
@@ -81,6 +166,243 @@ kcl_get()
         done
 
         return 1
+}
+
+detect_host_name()
+{
+  local host
+
+  host="$(kcl_get clevis.host owrt.host || true)"
+  [ -n "${host}" ] || host="$(hostname 2>/dev/null || true)"
+  [ -n "${host}" ] || host="$(uname -n 2>/dev/null || true)"
+  printf '%s' "${host:-unknown-host}"
+}
+
+discover_ifname()
+{
+  local ifn
+
+  for ifn in /sys/class/net/*; do
+    ifn="${ifn##*/}"
+    [ "${ifn}" = "lo" ] && continue
+    printf '%s\n' "${ifn}"
+    return 0
+  done
+  return 1
+}
+
+detect_primary_ip()
+{
+  local ip target_if
+
+  target_if="${ZBM_NET_IFNAME:-}"
+  [ -n "${target_if}" ] || target_if="$(discover_ifname || true)"
+  if command -v ip >/dev/null 2>&1; then
+    if [ -n "${target_if}" ]; then
+      ip="$(ip -o -4 addr show dev "${target_if}" scope global 2>/dev/null | awk '
+        {
+          split($4, a, "/")
+          print a[1]
+          exit
+        }
+      ')"
+    fi
+    if [ -z "${ip:-}" ]; then
+      ip="$(ip -o -4 addr show up scope global 2>/dev/null | awk '
+        $2 != "lo" {
+          split($4, a, "/")
+          print a[1]
+          exit
+        }
+      ')"
+    fi
+  fi
+
+  if [ -z "${ip:-}" ] && command -v ifconfig >/dev/null 2>&1; then
+    ip="$(ifconfig 2>/dev/null | awk '
+      /^[a-zA-Z0-9]/ { iface=$1; sub(/:$/, "", iface) }
+      $1 == "inet" && iface != "lo" { print $2; exit }
+      /inet addr:/ && iface != "lo" {
+        sub(/^addr:/, "", $2)
+        print $2
+        exit
+      }
+    ')"
+  fi
+
+  printf '%s' "${ip:-unknown-ip}"
+}
+
+apply_runtime_network_for_notify()
+{
+  if [ -x /usr/bin/zbm-network-up ]; then
+    if /usr/bin/zbm-network-up >>"${CLEVIS_HOOK_LOG}" 2>&1; then
+      log_hook notice "telegram notify: runtime network reapplied from kcl"
+    else
+      log_hook warn "telegram notify: runtime network reapply failed"
+    fi
+  fi
+}
+
+wait_for_network()
+{
+  local tries ip
+
+  tries="${1:-10}"
+  while [ "${tries}" -gt 0 ]; do
+    ip="$(detect_primary_ip)"
+    if [ -n "${ip}" ] && [ "${ip}" != "unknown-ip" ]; then
+      return 0
+    fi
+    sleep 1
+    tries=$((tries - 1))
+  done
+
+  return 1
+}
+
+url_encode()
+{
+  local input output i char hex
+
+  input="${1}"
+  output=""
+
+  LC_ALL=C
+  for ((i = 0; i < ${#input}; i++)); do
+    char="${input:i:1}"
+    case "${char}" in
+      [a-zA-Z0-9.~_-])
+        output="${output}${char}"
+        ;;
+      *)
+        printf -v hex '%02X' "'${char}"
+        output="${output}%${hex}"
+        ;;
+    esac
+  done
+
+  printf '%s' "${output}"
+}
+
+send_telegram_message()
+{
+  local token chat text body rc response_file response_text stderr_file stderr_text client
+
+  token="$(kcl_get clevis.API_TOKEN || true)"
+  chat="$(kcl_get clevis.CHAT_ID || true)"
+  text="${1}"
+
+  [ -n "${token}" ] || {
+    log_hook debug "telegram notify skipped: clevis.API_TOKEN is empty"
+    return 0
+  }
+  [ -n "${chat}" ] || {
+    log_hook debug "telegram notify skipped: clevis.CHAT_ID is empty"
+    return 0
+  }
+  if command -v uclient-fetch >/dev/null 2>&1; then
+    client="uclient-fetch"
+  elif command -v wget >/dev/null 2>&1; then
+    client="wget"
+  else
+    log_hook warn "telegram notify skipped: no HTTPS client is available in runtime"
+    return 0
+  fi
+
+  apply_runtime_network_for_notify
+
+  if wait_for_network 15; then
+    log_hook notice "telegram notify: network became ready before send"
+  else
+    log_hook warn "telegram notify: network still not ready, trying ${client} anyway"
+  fi
+
+  body="chat_id=$(url_encode "${chat}")&text=$(url_encode "${text}")"
+  response_file="$(mktemp)"
+  stderr_file="$(mktemp)"
+  "${client}" -q -O "${response_file}" --timeout=15 \
+    --header='Content-Type: application/x-www-form-urlencoded' \
+    --post-data="${body}" \
+    "https://api.telegram.org/bot${token}/sendMessage" \
+    2>"${stderr_file}"
+  rc=$?
+
+  response_text="$(tr '\n' ' ' < "${response_file}" 2>/dev/null | sed 's/[[:space:]]\+/ /g' | cut -c1-240)"
+  stderr_text="$(tr '\n' ' ' < "${stderr_file}" 2>/dev/null | sed 's/[[:space:]]\+/ /g' | cut -c1-240)"
+  rm -f "${response_file}"
+  rm -f "${stderr_file}"
+
+  if [ "${rc}" -eq 0 ]; then
+    log_hook notice "telegram notify: ${client} rc=${rc}"
+    [ -n "${response_text}" ] && log_hook debug "telegram notify response: ${response_text}"
+    [ -n "${stderr_text}" ] && log_hook debug "telegram notify ${client} stderr: ${stderr_text}"
+  else
+    log_hook warn "telegram notify: ${client} rc=${rc}"
+    [ -n "${response_text}" ] && log_hook warn "telegram notify response: ${response_text}"
+    [ -n "${stderr_text}" ] && log_hook warn "telegram notify ${client} stderr: ${stderr_text}"
+  fi
+}
+
+pcr_status_summary()
+{
+  printf '1=%s 4=%s 5=%s 7=%s 9=%s' \
+    "${CLEVIS_CHECK_1:--}" \
+    "${CLEVIS_CHECK_4:--}" \
+    "${CLEVIS_CHECK_5:--}" \
+    "${CLEVIS_CHECK_7:--}" \
+    "${CLEVIS_CHECK_9:--}"
+}
+
+failed_pcr_list()
+{
+  local configured item status out
+
+  configured="$(kcl_get clevis.pcr_ids || printf '1,4,5,7,9')"
+  out=""
+
+  OLDIFS="${IFS}"
+  IFS=', '
+  for item in ${configured}; do
+    case "${item}" in
+      1) status="${CLEVIS_CHECK_1:--}" ;;
+      4) status="${CLEVIS_CHECK_4:--}" ;;
+      5) status="${CLEVIS_CHECK_5:--}" ;;
+      7) status="${CLEVIS_CHECK_7:--}" ;;
+      9) status="${CLEVIS_CHECK_9:--}" ;;
+      *) status="-" ;;
+    esac
+    if [ "${status}" = "FAIL" ]; then
+      [ -z "${out}" ] && out="${item}" || out="${out},${item}"
+    fi
+  done
+  IFS="${OLDIFS}"
+
+  printf '%s' "${out:-none}"
+}
+
+notify_autoboot_failure()
+{
+  local dataset reason host ip msg pcr_ids pcr_status pcr_failed
+
+  is_manual_phase && return 0
+
+  dataset="${1}"
+  reason="${2}"
+  host="$(detect_host_name)"
+  ip="$(detect_primary_ip)"
+  pcr_ids="$(kcl_get clevis.pcr_ids || printf '1,4,5,7,9')"
+  pcr_status="$(pcr_status_summary)"
+  pcr_failed="$(failed_pcr_list)"
+  msg="Clevis auto-unlock failed on ${host}
+IP: ${ip}
+Dataset: ${dataset}
+Reason: ${reason}
+Configured PCRs: ${pcr_ids}
+PCR status: ${pcr_status}
+Failed PCRs: ${pcr_failed}"
+
+  send_telegram_message "${msg}"
 }
 
 get_fs_value()
@@ -113,6 +435,23 @@ ensure_efivarfs()
   if ! awk '$2 == target { found=1 } END { exit !found }' target="/sys/firmware/efi/efivars" /proc/mounts; then
     mount -t efivarfs efivarfs /sys/firmware/efi/efivars || return 1
   fi
+}
+
+read_efivar_payload()
+{
+  local name="$1"
+
+  efivar -n "${name}" -p 2>/dev/null | awk -F'|' '
+    {
+      field=$2
+      gsub(/^[[:space:]]+/, "", field)
+      gsub(/[[:space:]]+$/, "", field)
+      aggr=aggr field
+    }
+    END {
+      print aggr
+    }
+  '
 }
 
 mount_jwe_store()
@@ -194,35 +533,70 @@ is_manual_phase()
   [ -e /run/zbm-autoboot.done ]
 }
 
+reset_pcr_statuses()
+{
+  CLEVIS_CHECK_1="-"
+  CLEVIS_CHECK_4="-"
+  CLEVIS_CHECK_5="-"
+  CLEVIS_CHECK_7="-"
+  CLEVIS_CHECK_9="-"
+}
+
+populate_pcr_statuses()
+{
+  local dataset="$1"
+  local store="$2"
+  local store_path="${3:-}"
+
+  reset_pcr_statuses
+
+  if [[ "$store" == "zfs" ]]; then
+    CLEVIS_CHECK_1="$(zfs get -H -p -o value latchset.clevis:jwe_1 -s local "$dataset" 2>/dev/null || true)"
+    CLEVIS_CHECK_4="$(zfs get -H -p -o value latchset.clevis:jwe_4 -s local "$dataset" 2>/dev/null || true)"
+    CLEVIS_CHECK_5="$(zfs get -H -p -o value latchset.clevis:jwe_5 -s local "$dataset" 2>/dev/null || true)"
+    CLEVIS_CHECK_7="$(zfs get -H -p -o value latchset.clevis:jwe_7 -s local "$dataset" 2>/dev/null || true)"
+    CLEVIS_CHECK_9="$(zfs get -H -p -o value latchset.clevis:jwe_9 -s local "$dataset" 2>/dev/null || true)"
+  elif [[ "$store" == "efi" ]]; then
+    ensure_efivarfs || return 1
+    CLEVIS_CHECK_1="$(read_efivar_payload 55555555-5555-5555-5555-555555555555-ClevisJWE_1)"
+    CLEVIS_CHECK_4="$(read_efivar_payload 55555555-5555-5555-5555-555555555555-ClevisJWE_4)"
+    CLEVIS_CHECK_5="$(read_efivar_payload 55555555-5555-5555-5555-555555555555-ClevisJWE_5)"
+    CLEVIS_CHECK_7="$(read_efivar_payload 55555555-5555-5555-5555-555555555555-ClevisJWE_7)"
+    CLEVIS_CHECK_9="$(read_efivar_payload 55555555-5555-5555-5555-555555555555-ClevisJWE_9)"
+  elif [[ "$store" == "vfat" ]]; then
+    [ -n "${store_path}" ] || return 1
+    mount_jwe_store "$store_path" ro || return 1
+    CLEVIS_CHECK_1="$(read_jwe_store_file Clevis.JWE_1 2>/dev/null || true)"
+    CLEVIS_CHECK_4="$(read_jwe_store_file Clevis.JWE_4 2>/dev/null || true)"
+    CLEVIS_CHECK_5="$(read_jwe_store_file Clevis.JWE_5 2>/dev/null || true)"
+    CLEVIS_CHECK_7="$(read_jwe_store_file Clevis.JWE_7 2>/dev/null || true)"
+    CLEVIS_CHECK_9="$(read_jwe_store_file Clevis.JWE_9 2>/dev/null || true)"
+    umount_jwe_store
+  fi
+
+  CLEVIS_CHECK_1="$(pcr_check_status "$CLEVIS_CHECK_1")"
+  CLEVIS_CHECK_4="$(pcr_check_status "$CLEVIS_CHECK_4")"
+  CLEVIS_CHECK_5="$(pcr_check_status "$CLEVIS_CHECK_5")"
+  CLEVIS_CHECK_7="$(pcr_check_status "$CLEVIS_CHECK_7")"
+  CLEVIS_CHECK_9="$(pcr_check_status "$CLEVIS_CHECK_9")"
+}
+
 reseal_data_set()
 {
-  API_TOKEN="$(kcl_get clevis.API_TOKEN || true)"
-  CHAT_ID="$(kcl_get clevis.CHAT_ID || true)"
-  host="$(kcl_get clevis.host || true)"
-
-  IP="$(ip route get 1.1.1.1 2>/dev/null | awk '/src/ { for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit } }')"
   PCR_IDS="$(kcl_get clevis.pcr_ids || printf '1,4,5,7,9')"
 
- if [[ -n "$API_TOKEN" && -n "$CHAT_ID" ]]; then
- MSG="<b>Clevis for ZBM:</b> Reboot of $host IP: $IP <b>Password is required</b>"
- curl -k -s --data "text=$MSG" --data "chat_id=$CHAT_ID&parse_mode=html" 'https://api.telegram.org/bot'$API_TOKEN'/sendMessage' > /dev/null
- fi
-
-  rd="Our IP: $IP
-1 - firmware data/host platform configuration: $CLEVIS_CHECK_1
-4 - Boot loader and additional drivers: $CLEVIS_CHECK_4
-5 - GPT/Partition table: $CLEVIS_CHECK_5
-7 - SecureBoot state: $CLEVIS_CHECK_7
-9 - booter + kcl : $CLEVIS_CHECK_9
-Configured PCRs: $PCR_IDS
-We have autodecrypt flag set to on, however $1 can't be unlocked. Would you like to reseal the password [yes/no] "
-  read -p "$rd" SRESEAL
+  echo >&2
+  echo "Automatic clevis unlock failed for ${1}." >&2
+  echo "PCR status: 1=${CLEVIS_CHECK_1} 4=${CLEVIS_CHECK_4} 5=${CLEVIS_CHECK_5} 7=${CLEVIS_CHECK_7} 9=${CLEVIS_CHECK_9}" >&2
+  echo "Configured PCRs: ${PCR_IDS}" >&2
+  read -r -p "Reseal password [yes/no]: " SRESEAL
   seq=3
   if [[ "$SRESEAL" == "yes" ]]; then
     while [[ "$seq" -gt 0 ]]
     do
-      read -s -p  "Type the password, please, to unlock $1. You have $seq attempts left : " PASS
-      echo -n "$PASS" | zfs load-key -n -L prompt "$1" >&2
+      read -r -s -p "Enter ZFS password for ${1} (${seq} attempt(s) left): " PASS
+      echo >&2
+      zfs_load_key_check_prompt "$1" "$PASS"
       res=$?
       if [[ "$res" == "0" ]]; then
         seq=0
@@ -252,14 +626,8 @@ load_key_clevis() {
     zdebug "Using encryption root $unlock_dataset for dataset $dataset_for_clevis_unlock"
   fi
 
-  # We need to setup network for remote access
-
-  ssh1="$(kcl_get clevis.ssh1 || true)"
-  ssh2="$(kcl_get clevis.ssh2 || true)"
-
-  [[ -n "$ssh1" ]] && echo "$ssh1" >> /root/.ssh/authorized_keys
-  [[ -n "$ssh2" ]] && echo "$ssh2" >> /root/.ssh/authorized_keys
-
+  init_hook_log
+  reset_pcr_statuses
   CLEVIS_CHECK="$(kcl_get clevis.decrypt || true)"
   if [[ "$CLEVIS_CHECK" == "yes" ]]; then
     zdebug "Found dataset for clevis unlocking: $unlock_dataset"
@@ -268,17 +636,19 @@ load_key_clevis() {
     if [ "${KEYLOCATION}" = "${KEYFILE}" ] || [ -z "${KEYFILE}" ]; then
         # That's not us
         zwarn "keylocation is not file while clevis unlock is set for dataset $unlock_dataset"
+        notify_autoboot_failure "$unlock_dataset" "keylocation is not file-backed"
         return 0
     fi
     if [ -f "${KEYFILE}" ]; then
       zwarn "Key filename $KEYLOCATION in keylocation property for dataset $unlock_dataset conflicts with existing file in ZBM. Please change it"
+      notify_autoboot_failure "$unlock_dataset" "keylocation conflicts with existing file in ZBM"
       return 0
     fi
     # We suppose the keylocation has value in format file:///something/key
   fail_stamp="/tmp/clevis-autoboot-failed.${unlock_dataset//\//_}"
 
   KEYSTATUS="$(zfs get -H -p -o value keystatus -s none "$unlock_dataset")"
-  if [[ "$KEYSTATUS" == "unavailable" ]]; then
+        if [[ "$KEYSTATUS" == "unavailable" ]]; then
         if ! is_manual_phase && [[ -e "$fail_stamp" ]]; then
           zwarn "automatic clevis unlock already failed for $unlock_dataset in this boot"
           return 1
@@ -297,7 +667,7 @@ load_key_clevis() {
           JWE="$(zfs get -H -p -o value latchset.clevis:jwe -s local "$unlock_dataset")"
 	elif [[ "$CLEVIS_LOCATION" == "efi" ]]; then
           ensure_efivarfs || return 1
-          JWE="$(efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE -p|awk -F \| '{aggr=aggr $2} END {print aggr}')"
+          JWE="$(read_efivar_payload 55555555-5555-5555-5555-555555555555-ClevisJWE)"
 	else
           CLEVIS_STORE="$(kcl_get clevis.file_location || true)"
           if [[ "$CLEVIS_STORE" != "-" ]]; then
@@ -307,62 +677,41 @@ load_key_clevis() {
           fi
 	fi
         mkdir -p "$(dirname /tmp/"$dataset_for_clevis_unlock"_clevis_temp_key)"
-        echo "$JWE" | clevis decrypt >/tmp/"$dataset_for_clevis_unlock"_clevis_temp_key
-        if zfs load-key -L file:///tmp/"$dataset_for_clevis_unlock"_clevis_temp_key -n "$unlock_dataset"; then
+        if clevis_decrypt_to_file "$JWE" /tmp/"$dataset_for_clevis_unlock"_clevis_temp_key && \
+           zfs_load_key_check_file "$unlock_dataset" /tmp/"$dataset_for_clevis_unlock"_clevis_temp_key; then
           rm -f "$fail_stamp"
           mv /tmp/"$dataset_for_clevis_unlock"_clevis_temp_key "$KEYFILE"
           return 0
         else
           if ! is_manual_phase; then
             : > "$fail_stamp"
+            populate_pcr_statuses "$unlock_dataset" "$CLEVIS_LOCATION" "${CLEVIS_STORE:-}" || true
+            notify_autoboot_failure "$unlock_dataset" "clevis decrypt or zfs load-key verification failed"
             zwarn "automatic clevis unlock failed for $unlock_dataset in auto-boot mode"
             return 1
           fi
           # We have autodecrypt flag set to on, however dataset can't be unlocked. Offer resealing the password
-	  if [[ "$CLEVIS_LOCATION" == "zfs" ]]; then
-	    CLEVIS_CHECK_1="$(zfs get -H -p -o value latchset.clevis:jwe_1 -s local "$unlock_dataset")"
-	    CLEVIS_CHECK_4="$(zfs get -H -p -o value latchset.clevis:jwe_4 -s local "$unlock_dataset")"
-	    CLEVIS_CHECK_5="$(zfs get -H -p -o value latchset.clevis:jwe_5 -s local "$unlock_dataset")"
-	    CLEVIS_CHECK_7="$(zfs get -H -p -o value latchset.clevis:jwe_7 -s local "$unlock_dataset")"
-	    CLEVIS_CHECK_9="$(zfs get -H -p -o value latchset.clevis:jwe_9 -s local "$unlock_dataset")"
-	  elif [[ "$CLEVIS_LOCATION" == "efi" ]]; then
-            ensure_efivarfs || return 1
-	    CLEVIS_CHECK_1="$(efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_1 -p|awk -F \| '{aggr=aggr $2} END {print aggr}')"
-	    CLEVIS_CHECK_4="$(efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_4 -p|awk -F \| '{aggr=aggr $2} END {print aggr}')"
-	    CLEVIS_CHECK_5="$(efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_5 -p|awk -F \| '{aggr=aggr $2} END {print aggr}')"
-	    CLEVIS_CHECK_7="$(efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_7 -p|awk -F \| '{aggr=aggr $2} END {print aggr}')"
-	    CLEVIS_CHECK_9="$(efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_9 -p|awk -F \| '{aggr=aggr $2} END {print aggr}')"
-	  else
+	  if [[ "$CLEVIS_LOCATION" != "zfs" && "$CLEVIS_LOCATION" != "efi" ]]; then
             if [[ "$CLEVIS_STORE" == "-" ]]; then
                 # We failed. The jwe location is not correctly stored in dataset
                 zwarn "We failed. The jwe file location is not correctly defined in commandline"
+                notify_autoboot_failure "$unlock_dataset" "clevis.file_location is not defined for vfat backend"
                 return 1
             fi
-            mount_jwe_store "$CLEVIS_STORE" ro || return 1
-            CLEVIS_CHECK_1="$(read_jwe_store_file Clevis.JWE_1)"
-            CLEVIS_CHECK_4="$(read_jwe_store_file Clevis.JWE_4)"
-            CLEVIS_CHECK_5="$(read_jwe_store_file Clevis.JWE_5)"
-            CLEVIS_CHECK_7="$(read_jwe_store_file Clevis.JWE_7)"
-            CLEVIS_CHECK_9="$(read_jwe_store_file Clevis.JWE_9)"
-            umount_jwe_store
 	  fi
 
-	  CLEVIS_CHECK_1="$(echo $CLEVIS_CHECK_1 | clevis decrypt)"
-	  CLEVIS_CHECK_4="$(echo $CLEVIS_CHECK_4 | clevis decrypt)"
-	  CLEVIS_CHECK_5="$(echo $CLEVIS_CHECK_5 | clevis decrypt)"
-	  CLEVIS_CHECK_7="$(echo $CLEVIS_CHECK_7 | clevis decrypt)"
-	  CLEVIS_CHECK_9="$(echo $CLEVIS_CHECK_9 | clevis decrypt)"
+	  populate_pcr_statuses "$unlock_dataset" "$CLEVIS_LOCATION" "${CLEVIS_STORE:-}" || true
 
           RESEAL="$(reseal_data_set "$unlock_dataset")"
           if [[ "$RESEAL" != "" ]]; then
             # We are fine
             PCR_IDS="$(kcl_get clevis.pcr_ids || printf '1,4,5,7,9')"
-            echo "$RESEAL"|clevis encrypt tpm2 "{\"pcr_ids\":\"${PCR_IDS}\",\"pcr_bank\":\"sha256\"}" > /tmp/clevis_zfs.jwe
-            echo "OK"|clevis encrypt tpm2 '{"pcr_ids":"1","pcr_bank":"sha256"}' > /tmp/clevis_zfs_1.jwe
-            echo "OK"|clevis encrypt tpm2 '{"pcr_ids":"4","pcr_bank":"sha256"}' > /tmp/clevis_zfs_4.jwe
-            echo "OK"|clevis encrypt tpm2 '{"pcr_ids":"5","pcr_bank":"sha256"}' > /tmp/clevis_zfs_5.jwe
-            echo "OK"|clevis encrypt tpm2 '{"pcr_ids":"7","pcr_bank":"sha256"}' > /tmp/clevis_zfs_7.jwe
-            echo "OK"|clevis encrypt tpm2 '{"pcr_ids":"9","pcr_bank":"sha256"}' > /tmp/clevis_zfs_9.jwe
+            printf '%s' "$RESEAL" | clevis encrypt tpm2 "{\"pcr_ids\":\"${PCR_IDS}\",\"pcr_bank\":\"sha256\"}" > /tmp/clevis_zfs.jwe 2>>"${CLEVIS_HOOK_LOG}"
+            printf '%s' "OK" | clevis encrypt tpm2 '{"pcr_ids":"1","pcr_bank":"sha256"}' > /tmp/clevis_zfs_1.jwe 2>>"${CLEVIS_HOOK_LOG}"
+            printf '%s' "OK" | clevis encrypt tpm2 '{"pcr_ids":"4","pcr_bank":"sha256"}' > /tmp/clevis_zfs_4.jwe 2>>"${CLEVIS_HOOK_LOG}"
+            printf '%s' "OK" | clevis encrypt tpm2 '{"pcr_ids":"5","pcr_bank":"sha256"}' > /tmp/clevis_zfs_5.jwe 2>>"${CLEVIS_HOOK_LOG}"
+            printf '%s' "OK" | clevis encrypt tpm2 '{"pcr_ids":"7","pcr_bank":"sha256"}' > /tmp/clevis_zfs_7.jwe 2>>"${CLEVIS_HOOK_LOG}"
+            printf '%s' "OK" | clevis encrypt tpm2 '{"pcr_ids":"9","pcr_bank":"sha256"}' > /tmp/clevis_zfs_9.jwe 2>>"${CLEVIS_HOOK_LOG}"
 	    if [[ "$CLEVIS_LOCATION" == "zfs" ]]; then
               zdebug "Try to store correct jwe in $unlock_dataset"
               pool=${unlock_dataset%/*}
@@ -379,7 +728,7 @@ load_key_clevis() {
               efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_7 --write -f /tmp/clevis_zfs_7.jwe
               efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_9 --write -f /tmp/clevis_zfs_9.jwe
               mount -o ro,remount /sys/firmware/efi/efivars
-              jwe_check="$(efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE -p|awk -F \| '{aggr=aggr $2} END {print aggr}')"
+              jwe_check="$(read_efivar_payload 55555555-5555-5555-5555-555555555555-ClevisJWE)"
 	    else
               zdebug "Try to store correct jwe in Clevis.JWE file"
               mount_jwe_store "$CLEVIS_STORE" rw || return 1
@@ -393,9 +742,12 @@ load_key_clevis() {
               umount_jwe_store
 	    fi
             # check if we are fine
-            if echo "$jwe_check" | clevis decrypt | zfs load-key -n -L prompt "$unlock_dataset"; then
+            if clevis_decrypt_to_file "$jwe_check" /tmp/"$dataset_for_clevis_unlock"_clevis_verify_key && \
+               zfs_load_key_check_file "$unlock_dataset" /tmp/"$dataset_for_clevis_unlock"_clevis_verify_key; then
+              rm -f /tmp/"$dataset_for_clevis_unlock"_clevis_verify_key
               zdebug "The jwe was correctly stored in $CLEVIS_LOCATION for dataset $unlock_dataset"
             else
+              rm -f /tmp/"$dataset_for_clevis_unlock"_clevis_verify_key
               # We failed. The jwe is not correctly stored in dataset
               zwarn "We failed. The jwe was not correctly stored in $CLEVIS_LOCATION for dataset $unlock_dataset"
               return 1

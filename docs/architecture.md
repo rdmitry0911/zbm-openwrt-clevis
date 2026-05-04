@@ -32,6 +32,14 @@ Notes:
 - providing the operational kernel command line
 - remaining the stable top-level boot manager
 
+Important caveat:
+
+- security-critical policy carried in external `rEFInd` options is protected
+  only by the PCRs you actually bind in `clevis.pcr_ids`
+- if you need external `kcl` itself to be part of the seal policy, include the
+  PCR that measures it in your chosen PCR set
+- see [threat-model.md](threat-model.md) for the exact security implication
+
 Typical parameters passed from `rEFInd`:
 
 - `clevis.decrypt=yes`
@@ -41,6 +49,9 @@ Typical parameters passed from `rEFInd`:
 - `owrt.auto_bootfs=rpool/ROOT/ubuntu_iu2exh`
 - network or Wi-Fi parameters
 - OpenWrt SSH public key and root password hash
+- optional Telegram notification parameters
+
+The complete `kcl` contract is documented in [kcl-options.md](kcl-options.md).
 
 ## Runtime components
 

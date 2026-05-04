@@ -67,6 +67,30 @@ menuentry "OpenWrt ZBM UKI" {
 }
 ```
 
+Important:
+
+- the validated UKI path uses a manual `menuentry` in `refind.conf`
+- in that mode, `rEFInd` takes runtime policy from the `options` line in `refind.conf`
+- `refind_linux.conf` is not used by this manual UKI entry
+- keep the `options` string on a single logical line
+
+If you want to pass a public SSH key through `rEFInd`, quote it inside the
+`options` string, for example:
+
+```conf
+owrt.ssh_pubkey=""ssh-rsa AAAAB3... comment""
+```
+
+If you want a console and serial login password, pass a valid SHA-512 hash:
+
+```conf
+owrt.root_password_hash=$6$...
+```
+
+The current build no longer bakes in the builder host SSH key by default. If a
+default key is desired at build time, set `DEFAULT_SSH_PUBKEY_FILE` before
+running `zbm-openwrt-refresh-runtime.sh`.
+
 ## Installation on a real machine
 
 The minimal installation steps are:
