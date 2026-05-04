@@ -117,19 +117,18 @@ The validated lab often used:
 
 `clevis.pcr_ids=1,4,5,7,9`
 
-This does **not automatically guarantee** that all externally supplied
-`rEFInd` command-line options are covered by the seal policy.
-
-If your security model requires the external boot command line itself to be
-measured, include the PCR that carries that measurement in your chosen policy.
-For `systemd-stub`-style external load options, that is typically `PCR12`.
+For the currently validated chain in this repository, that set is the intended
+and validated policy set. In this configuration it covers the relevant measured
+surface, including the external `rEFInd` command line used to configure the
+OpenWrt UKI runtime.
 
 Practical consequence:
 
-- if your critical policy lives in external `kcl`, do not assume `1,4,5,7,9`
-  is enough
-- either include the needed PCR for external command-line measurement
-- or move critical policy out of mutable external `kcl`
+- changing the arguments passed by `rEFInd` changes the measured state
+- after such a change, the previously sealed secret must stop decrypting
+- automatic boot must stop working until a manual reseal is performed
+
+This is the expected protection model for the current project.
 
 ## Read-only vs read-write boundary
 
@@ -163,7 +162,7 @@ the target chat can observe those messages.
   when you actually want console access.
 - Use a single trusted SSH key through `owrt.ssh_pubkey`.
 - Treat `owrt.ttylogin=0` as an insecure debug mode.
-- If `kcl` contains security-critical policy, include the relevant PCRs for the
-  command line itself.
+- Keep `clevis.pcr_ids=1,4,5,7,9` unless you are intentionally redesigning the
+  measured-boot policy and understand the consequences.
 - Rebuild, clear TPM state, do one manual reseal, and only then expect
   automatic boot to succeed.

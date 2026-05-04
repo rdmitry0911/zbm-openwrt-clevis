@@ -36,8 +36,10 @@ Important caveat:
 
 - security-critical policy carried in external `rEFInd` options is protected
   only by the PCRs you actually bind in `clevis.pcr_ids`
-- if you need external `kcl` itself to be part of the seal policy, include the
-  PCR that measures it in your chosen PCR set
+- in the currently validated project configuration, `clevis.pcr_ids=1,4,5,7,9`
+  is the policy set that covers the relevant external `kcl`
+- changing `rEFInd` arguments therefore changes the measured state and must
+  stop automatic boot until a new reseal is performed
 - see [threat-model.md](threat-model.md) for the exact security implication
 
 Typical parameters passed from `rEFInd`:

@@ -59,9 +59,9 @@ This is required only for `clevis.store=vfat`.
 - Consumer: `zbm-kcl-apply`, `load_key` hook
 - Meaning: PCR set used when sealing or resealing the secret
 
-Important: if critical policy is supplied via external `rEFInd` `kcl`, include
-the PCR that measures that external command line if your threat model requires
-it.
+For the currently validated project configuration, `1,4,5,7,9` is the intended
+set. In this chain it covers the relevant external `rEFInd` `kcl`, so changing
+those arguments must break automatic unlock until a new reseal is done.
 
 ### `owrt.auto_bootfs`
 

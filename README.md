@@ -75,5 +75,7 @@ For real machines, use a manual `rEFInd` `menuentry` with an `options` line in
 
 If you put security-relevant policy into external `rEFInd` kernel command line
 parameters, read [docs/threat-model.md](docs/threat-model.md) and
-[docs/kcl-options.md](docs/kcl-options.md) first. The measured surface depends
-on the PCR set you actually bind in `clevis.pcr_ids`.
+[docs/kcl-options.md](docs/kcl-options.md) first. In the currently validated
+configuration, `clevis.pcr_ids=1,4,5,7,9` covers the relevant external
+`rEFInd` `kcl`, so changing those arguments is expected to stop automatic boot
+until a new reseal is performed.
