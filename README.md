@@ -14,6 +14,33 @@ This repository contains:
 
 The `lab/` scripts are snapshots from the validated OpenWrt build tree. They are kept here for reference and reuse, but the validated execution still happened inside the OpenWrt source tree with its `build_dir`, `staging_dir`, kernel, and package outputs present.
 
+## Motivation
+
+The original need was a bootloader that could autonomously boot a system from
+an encrypted ZFS root while still preserving a meaningful trust decision about
+when it is safe to release the decryption key.
+
+`ZFSBootMenu` already solves the ZFS boot problem well, but by itself it
+expects a human to type the key. For a remote machine that is not enough: it
+does not guarantee that the operator is typing the key into a trusted
+environment. A measured trust decision is needed first. That is where
+`clevis` enters the design.
+
+At the same time, `ZFSBootMenu` is a boot environment, not a full operating
+system. Even if `clevis` says the measured state is trusted, a hostile person
+at the console could still interfere while the operator is typing the key.
+`ZFSBootMenu` does not try to prevent that. The project therefore places a
+minimal but complete OpenWrt system in front of it: OpenWrt can require a real
+password-protected login before the operator reaches the manual unlock path.
+
+The result is a split design:
+
+- `rEFInd` configures the boot runtime through `kcl`
+- `zbm-openwrt-clevis` decides whether the key may be recovered automatically
+- if automatic recovery is not trusted anymore, the operator is notified and
+  can choose whether to log in and reseal manually
+- the target OS is booted only after the encrypted ZFS root has been unlocked
+
 ## Repo layout
 
 - [docs/architecture.md](docs/architecture.md): boot model, relation to `rEFInd`, runtime components, user interaction
@@ -79,3 +106,9 @@ parameters, read [docs/threat-model.md](docs/threat-model.md) and
 configuration, `clevis.pcr_ids=1,4,5,7,9` covers the relevant external
 `rEFInd` `kcl`, so changing those arguments is expected to stop automatic boot
 until a new reseal is performed.
+
+One practical bonus of this split model is that the target kernel,
+`initramfs/initrd`, and the embedded target-side decryption material all live
+inside the encrypted ZFS root. Updating the target system can therefore change
+`vmlinuz` or `initramfs` without forcing a new manual unlock, as long as the
+measured OpenWrt boot runtime itself did not change.

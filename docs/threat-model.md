@@ -10,6 +10,26 @@ Validated chain:
 
 `UEFI -> rEFInd -> OpenWrt UKI -> zbm-auto-boot -> zbm-start -> load-key hook / clevis -> donor ZBM runtime -> kexec -> target OS`
 
+## Motivation for the trust boundary
+
+The key design problem is not only how to boot encrypted ZFS, but how to avoid
+typing the decryption key into an environment whose trust level is unknown.
+
+`ZFSBootMenu` already knows how to boot encrypted ZFS systems, but by itself it
+expects a human to provide the passphrase. On a remote machine that is not a
+sufficient trust model. The operator first needs confidence that the current
+boot environment is still the same environment that was previously inspected
+and trusted.
+
+That is why `clevis` and TPM measurements are introduced. They provide the
+automatic trust check before the clear-text key is released.
+
+That is also why OpenWrt is placed in front of donor `ZFSBootMenu`. `ZFSBootMenu`
+is not a full operating system and does not try to prevent a person at the
+console from interfering while the operator is typing the key. OpenWrt is used
+as the minimal complete runtime that can require normal authenticated access
+before the manual fallback path is exposed.
+
 ## Protected assets
 
 The design tries to protect:
@@ -19,6 +39,22 @@ The design tries to protect:
 - the integrity of the measured OpenWrt UKI used as the policy runtime
 - the integrity of the TPM-sealed `JWE` used for later automatic boots
 - operator access to the fallback OpenWrt runtime
+
+## Guarded perimeter
+
+The guarded perimeter is the measured `zbm-openwrt-clevis` runtime itself and
+the boot context that launches it.
+
+Its responsibility is limited and explicit:
+
+- obtain the key that unlocks the encrypted ZFS root
+- obtain it automatically only if the measured environment is still trusted
+- refuse automatic unlock when that trust decision no longer holds
+- notify the operator and wait for a manual decision whether to continue
+
+The runtime is allowed to see the encrypted form of the key material, but not
+to turn it into clear-text key material unless the current measured state still
+matches the manually approved state from the last successful reseal.
 
 ## Trusted components and assumptions
 
@@ -73,6 +109,17 @@ load-key -n` verification.
 An old secret bound to old PCR values should stop working after relevant boot
 changes, forcing a manual reseal.
 
+### Modified external `rEFInd` arguments
+
+In the current validated configuration, `clevis.pcr_ids=1,4,5,7,9` covers the
+relevant external `rEFInd` `kcl` used to configure `zbm-openwrt-clevis`.
+
+That means:
+
+- changing those arguments changes the measured state
+- automatic boot must stop
+- the operator must decide whether to enter the key manually and reseal again
+
 ### Unauthorized access to fallback OpenWrt
 
 The image now defaults to:
@@ -98,6 +145,8 @@ The package does not try to solve:
 - operator compromise after the operator has valid root password or valid SSH key
 - confidentiality of Telegram notifications
 - secure delivery of secrets if they are intentionally placed in insecure `kcl`
+- compromise of the target operating system after control has already passed to
+  the target kernel and `initramfs/initrd`
 
 ## Important `kcl` caveat
 
@@ -129,6 +178,17 @@ Practical consequence:
 - automatic boot must stop working until a manual reseal is performed
 
 This is the expected protection model for the current project.
+
+## Why target OS updates do not force a manual unlock
+
+The target kernel, target `initramfs/initrd`, and target-side decryption
+content all live inside the encrypted ZFS root.
+
+As long as the measured OpenWrt runtime and its trusted launch context do not
+change, updating the target operating system does not by itself require another
+manual password entry. Automatic boot can continue because the trust gate is
+the measured `zbm-openwrt-clevis` runtime, not the changing contents inside
+the already protected encrypted root.
 
 ## Read-only vs read-write boundary
 

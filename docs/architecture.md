@@ -1,22 +1,91 @@
 # Architecture
 
+## Motivation
+
+The target problem is not just "boot encrypted ZFS" but "boot encrypted ZFS
+without giving up trust in the environment that receives the decryption key."
+
+`ZFSBootMenu` already handles encrypted ZFS roots well, but it normally relies
+on a human to type the key. For a remote system that is insufficient: the
+operator still needs confidence that the place where the key is entered is
+trusted. This project adds that trust decision through TPM measurements and
+`clevis`.
+
+`ZFSBootMenu` is also not a full operating system. Even when the measured
+state is trusted, it does not provide a hardened multi-user runtime that can
+enforce normal login boundaries before the operator types the key. OpenWrt is
+used as a minimal complete system that can require password-protected entry
+before the manual fallback path is available.
+
 ## Goal
 
 The design keeps the clear-text ZFS key out of persistent storage and uses a small OpenWrt runtime as the policy and orchestration layer before the real operating system is started.
 
-The target system is not unlocked directly by firmware or by the target initramfs. Instead, a separate boot runtime does the following:
+The target system itself, including `vmlinuz`, `initramfs/initrd`, and the
+target-side decryption material needed after handoff, lives on a fully
+encrypted ZFS root. The target system is not unlocked directly by firmware or
+by the target initramfs. Instead, a separate boot runtime does the following:
 
 1. starts in a measured UKI
 2. receives policy from the kernel command line provided by `rEFInd`
 3. attempts `clevis`-based key recovery
 4. feeds the recovered key into the donor `ZFSBootMenu` runtime
-5. boots the target system by `kexec`
+5. reads the target kernel and `initramfs/initrd` from the encrypted ZFS root
+6. boots the target system by `kexec`
+
+Once control reaches the target `initramfs/initrd`, that environment already
+has what it needs for its own side of the boot, so the remaining encrypted
+root handling is not blocked on another human interaction.
 
 ## Boot chain
 
 The validated chain is:
 
-`UEFI -> rEFInd -> OpenWrt UKI -> zbm-auto-boot -> zbm-start -> load-key hook / clevis -> donor ZBM runtime -> Ubuntu kernel`
+`UEFI -> rEFInd -> OpenWrt UKI -> zbm-auto-boot -> zbm-start -> load-key hook / clevis -> donor ZBM runtime -> kexec -> target kernel + initramfs -> target OS`
+
+Visual flow:
+
+```text
++--------+      +--------+      +---------------------+
+|  UEFI  | ---> | rEFInd | ---> | zbm-openwrt-clevis  |
++--------+      +--------+      | OpenWrt UKI runtime |
+                                +----------+----------+
+                                           |
+                                           | kcl policy
+                                           v
+                                +----------+----------+
+                                | zbm-auto-boot /     |
+                                | zbm-start           |
+                                +----------+----------+
+                                           |
+                                           | load-key hook
+                                           v
+                                +----------+----------+
+                                | clevis + TPM policy |
+                                +----+-----------+----+
+                                     |           |
+                      trusted state   |           | untrusted / changed state
+                        auto unlock   |           | notify operator, wait for
+                                     v           | manual decision
+                                +----+-----------+----+
+                                | donor ZFSBootMenu   |
+                                | runtime             |
+                                +----------+----------+
+                                           |
+                                           | reads kernel + initramfs
+                                           | from encrypted ZFS root
+                                           v
+                                +----------+----------+
+                                | kexec into target   |
+                                | kernel + initramfs  |
+                                +----------+----------+
+                                           |
+                                           v
+                                +----------+----------+
+                                | target OS on        |
+                                | encrypted ZFS root  |
+                                +---------------------+
+```
 
 Notes:
 
@@ -54,6 +123,24 @@ Typical parameters passed from `rEFInd`:
 - optional Telegram notification parameters
 
 The complete `kcl` contract is documented in [kcl-options.md](kcl-options.md).
+
+## Guarded perimeter
+
+The guarded perimeter is the OpenWrt UKI runtime itself plus the environment
+that measures and launches it.
+
+Its job is narrow:
+
+- boot as a measured EFI application
+- decide whether the current state is still trusted
+- recover the ZFS key automatically only in that trusted state
+- otherwise stop automatic boot, notify the operator, and wait for a manual
+  decision
+
+The runtime can access the encrypted form of the key material, but it must not
+be able to turn that into the clear-text ZFS key unless the measured state
+still matches the state that was manually approved by the operator during the
+last reseal.
 
 ## Runtime components
 
@@ -94,6 +181,19 @@ The hook distinguishes auto vs manual mode by the presence of `/run/zbm-autoboot
 
 - before `.done` exists, auto mode is active and interactive prompts are forbidden
 - after `.done` exists, manual mode is allowed to ask for passphrase and to reseal
+
+## Why target OS updates do not force a new manual unlock
+
+The measured gate is the OpenWrt boot runtime, not the target kernel or target
+`initramfs/initrd` stored inside the encrypted root.
+
+Practical consequence:
+
+- updating the target system may replace `vmlinuz`, `initramfs`, or embedded
+  target-side decryption content
+- automatic boot can continue to work without a new manual password entry
+- a new manual reseal is needed only when the measured OpenWrt runtime or its
+  trusted boot context changes
 
 ## Read-only and read-write policy
 
