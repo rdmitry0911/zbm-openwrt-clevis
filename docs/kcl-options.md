@@ -39,6 +39,15 @@ owrt.ssh_pubkey=""ssh-ed25519 AAAAC3... comment""
 - Consumer: `zbm-kcl-apply`, `load_key` hook
 - Meaning: selects where the sealed `JWE` is stored
 
+Current backend naming behavior:
+
+- `zfs`: properties are naturally scoped to the active encryption root
+- `efi`: variable names are derived from the active encryption root
+- `vfat`: file names are derived from the active encryption root
+
+For `efi` and `vfat`, the active encryption-root name is sanitized by
+replacing non `[A-Za-z0-9_.-]` characters with `_`.
+
 ### `clevis.file_location`
 
 - Alias: `owrt.clevis_file_location`
@@ -138,6 +147,9 @@ Telegram messages are sent only when automatic unlock fails. They include:
 - failure reason
 - host name
 - detected IP address
+- configured PCR set
+- per-PCR `OK/FAIL` status
+- failed PCR list
 
 ## Networking
 
@@ -150,7 +162,7 @@ Telegram messages are sent only when automatic unlock fails. They include:
 
 ### `owrt.net_ifname`
 
-- Default: `eth0`
+- Default: first non-loopback interface discovered at runtime, then `eth0` as fallback
 - Consumer: `zbm-kcl-apply`
 - Meaning: primary wired interface name for the generated OpenWrt `lan`
   interface

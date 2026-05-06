@@ -97,6 +97,16 @@ On the next cold boot, the same path should go to Ubuntu automatically.
 
 The full procedure, including `efi` and `vfat` backends, is documented in [docs/operation-and-selftest.md](docs/operation-and-selftest.md).
 
+Current runtime quality-of-life additions in the validated image:
+
+- `mc`
+- `nano-plus`
+
+Current operator interaction in the donor `ZBM` runtime:
+
+- `Ctrl-C` exits the TUI back to the protected OpenWrt system
+- the old shell-escape and direct chroot shortcuts are intentionally disabled
+
 For real machines, use a manual `rEFInd` `menuentry` with an `options` line in
 `refind.conf`. The current UKI flow does not consume `refind_linux.conf`.
 

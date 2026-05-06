@@ -454,6 +454,47 @@ read_efivar_payload()
   '
 }
 
+clevis_store_tag()
+{
+  local dataset="$1"
+
+  printf '%s' "${dataset}" | sed 's/[^A-Za-z0-9_.-]/_/g'
+}
+
+efivar_jwe_name()
+{
+  local dataset="$1"
+  local suffix="${2:-}"
+  local tag
+
+  tag="$(clevis_store_tag "${dataset}")"
+  printf '55555555-5555-5555-5555-555555555555-ClevisJWE_%s%s' "${tag}" "${suffix}"
+}
+
+read_efivar_payload_for()
+{
+  local dataset="$1"
+  local suffix="${2:-}"
+  local value
+
+  value="$(read_efivar_payload "$(efivar_jwe_name "${dataset}" "${suffix}")")"
+  if [ -n "${value}" ]; then
+    printf '%s' "${value}"
+    return 0
+  fi
+
+  read_efivar_payload "55555555-5555-5555-5555-555555555555-ClevisJWE${suffix}"
+}
+
+write_efivar_payload_for()
+{
+  local dataset="$1"
+  local src="$2"
+  local suffix="${3:-}"
+
+  efivar -n "$(efivar_jwe_name "${dataset}" "${suffix}")" --write -f "${src}"
+}
+
 mount_jwe_store()
 {
   local spec="$1"
@@ -495,6 +536,31 @@ read_jwe_store_file()
   cat "${path}/${name}"
 }
 
+jwe_store_filename()
+{
+  local dataset="$1"
+  local suffix="${2:-}"
+  local tag
+
+  tag="$(clevis_store_tag "${dataset}")"
+  printf 'Clevis.%s.JWE%s' "${tag}" "${suffix}"
+}
+
+read_jwe_store_dataset_file()
+{
+  local dataset="$1"
+  local suffix="${2:-}"
+  local name
+
+  name="$(jwe_store_filename "${dataset}" "${suffix}")"
+  if [ -r "${ZBM_CLEVIS_STORE_MNT}${ZBM_CLEVIS_STORE_DIR:+/${ZBM_CLEVIS_STORE_DIR}}/${name}" ]; then
+    read_jwe_store_file "${name}"
+    return 0
+  fi
+
+  read_jwe_store_file "Clevis.JWE${suffix}"
+}
+
 write_jwe_store_file()
 {
   local src="$1"
@@ -503,6 +569,15 @@ write_jwe_store_file()
 
   [ -n "${ZBM_CLEVIS_STORE_DIR:-}" ] && path="${path}/${ZBM_CLEVIS_STORE_DIR}"
   cp "${src}" "${path}/${name}"
+}
+
+write_jwe_store_dataset_file()
+{
+  local dataset="$1"
+  local src="$2"
+  local suffix="${3:-}"
+
+  write_jwe_store_file "${src}" "$(jwe_store_filename "${dataset}" "${suffix}")"
 }
 
 with_rw_pool()
@@ -558,19 +633,19 @@ populate_pcr_statuses()
     CLEVIS_CHECK_9="$(zfs get -H -p -o value latchset.clevis:jwe_9 -s local "$dataset" 2>/dev/null || true)"
   elif [[ "$store" == "efi" ]]; then
     ensure_efivarfs || return 1
-    CLEVIS_CHECK_1="$(read_efivar_payload 55555555-5555-5555-5555-555555555555-ClevisJWE_1)"
-    CLEVIS_CHECK_4="$(read_efivar_payload 55555555-5555-5555-5555-555555555555-ClevisJWE_4)"
-    CLEVIS_CHECK_5="$(read_efivar_payload 55555555-5555-5555-5555-555555555555-ClevisJWE_5)"
-    CLEVIS_CHECK_7="$(read_efivar_payload 55555555-5555-5555-5555-555555555555-ClevisJWE_7)"
-    CLEVIS_CHECK_9="$(read_efivar_payload 55555555-5555-5555-5555-555555555555-ClevisJWE_9)"
+    CLEVIS_CHECK_1="$(read_efivar_payload_for "$dataset" "_1")"
+    CLEVIS_CHECK_4="$(read_efivar_payload_for "$dataset" "_4")"
+    CLEVIS_CHECK_5="$(read_efivar_payload_for "$dataset" "_5")"
+    CLEVIS_CHECK_7="$(read_efivar_payload_for "$dataset" "_7")"
+    CLEVIS_CHECK_9="$(read_efivar_payload_for "$dataset" "_9")"
   elif [[ "$store" == "vfat" ]]; then
     [ -n "${store_path}" ] || return 1
     mount_jwe_store "$store_path" ro || return 1
-    CLEVIS_CHECK_1="$(read_jwe_store_file Clevis.JWE_1 2>/dev/null || true)"
-    CLEVIS_CHECK_4="$(read_jwe_store_file Clevis.JWE_4 2>/dev/null || true)"
-    CLEVIS_CHECK_5="$(read_jwe_store_file Clevis.JWE_5 2>/dev/null || true)"
-    CLEVIS_CHECK_7="$(read_jwe_store_file Clevis.JWE_7 2>/dev/null || true)"
-    CLEVIS_CHECK_9="$(read_jwe_store_file Clevis.JWE_9 2>/dev/null || true)"
+    CLEVIS_CHECK_1="$(read_jwe_store_dataset_file "$dataset" "_1" 2>/dev/null || true)"
+    CLEVIS_CHECK_4="$(read_jwe_store_dataset_file "$dataset" "_4" 2>/dev/null || true)"
+    CLEVIS_CHECK_5="$(read_jwe_store_dataset_file "$dataset" "_5" 2>/dev/null || true)"
+    CLEVIS_CHECK_7="$(read_jwe_store_dataset_file "$dataset" "_7" 2>/dev/null || true)"
+    CLEVIS_CHECK_9="$(read_jwe_store_dataset_file "$dataset" "_9" 2>/dev/null || true)"
     umount_jwe_store
   fi
 
@@ -667,12 +742,12 @@ load_key_clevis() {
           JWE="$(zfs get -H -p -o value latchset.clevis:jwe -s local "$unlock_dataset")"
 	elif [[ "$CLEVIS_LOCATION" == "efi" ]]; then
           ensure_efivarfs || return 1
-          JWE="$(read_efivar_payload 55555555-5555-5555-5555-555555555555-ClevisJWE)"
+          JWE="$(read_efivar_payload_for "$unlock_dataset")"
 	else
           CLEVIS_STORE="$(kcl_get clevis.file_location || true)"
           if [[ "$CLEVIS_STORE" != "-" ]]; then
             mount_jwe_store "$CLEVIS_STORE" ro || return 1
-            JWE="$(read_jwe_store_file Clevis.JWE)"
+            JWE="$(read_jwe_store_dataset_file "$unlock_dataset")"
             umount_jwe_store
           fi
 	fi
@@ -718,27 +793,27 @@ load_key_clevis() {
               with_rw_pool "$pool" store_clevis_jwe_zfs "$unlock_dataset" || return 1
               jwe_check="$(zfs get -H -p -o value latchset.clevis:jwe -s local "$unlock_dataset")"
 	    elif [[ "$CLEVIS_LOCATION" == "efi" ]]; then
-              zdebug "Try to store correct jwe in 55555555-5555-5555-5555-555555555555-ClevisJWE efivar"
+              zdebug "Try to store correct jwe in dataset-specific efivar for $unlock_dataset"
               ensure_efivarfs || return 1
               mount -o rw,remount /sys/firmware/efi/efivars
-              efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE --write -f /tmp/clevis_zfs.jwe
-              efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_1 --write -f /tmp/clevis_zfs_1.jwe
-              efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_4 --write -f /tmp/clevis_zfs_4.jwe
-              efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_5 --write -f /tmp/clevis_zfs_5.jwe
-              efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_7 --write -f /tmp/clevis_zfs_7.jwe
-              efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_9 --write -f /tmp/clevis_zfs_9.jwe
+              write_efivar_payload_for "$unlock_dataset" /tmp/clevis_zfs.jwe
+              write_efivar_payload_for "$unlock_dataset" /tmp/clevis_zfs_1.jwe "_1"
+              write_efivar_payload_for "$unlock_dataset" /tmp/clevis_zfs_4.jwe "_4"
+              write_efivar_payload_for "$unlock_dataset" /tmp/clevis_zfs_5.jwe "_5"
+              write_efivar_payload_for "$unlock_dataset" /tmp/clevis_zfs_7.jwe "_7"
+              write_efivar_payload_for "$unlock_dataset" /tmp/clevis_zfs_9.jwe "_9"
               mount -o ro,remount /sys/firmware/efi/efivars
-              jwe_check="$(read_efivar_payload 55555555-5555-5555-5555-555555555555-ClevisJWE)"
+              jwe_check="$(read_efivar_payload_for "$unlock_dataset")"
 	    else
-              zdebug "Try to store correct jwe in Clevis.JWE file"
+              zdebug "Try to store correct jwe in dataset-specific Clevis.JWE file"
               mount_jwe_store "$CLEVIS_STORE" rw || return 1
-              write_jwe_store_file /tmp/clevis_zfs.jwe Clevis.JWE
-              write_jwe_store_file /tmp/clevis_zfs_1.jwe Clevis.JWE_1
-              write_jwe_store_file /tmp/clevis_zfs_4.jwe Clevis.JWE_4
-              write_jwe_store_file /tmp/clevis_zfs_5.jwe Clevis.JWE_5
-              write_jwe_store_file /tmp/clevis_zfs_7.jwe Clevis.JWE_7
-              write_jwe_store_file /tmp/clevis_zfs_9.jwe Clevis.JWE_9
-              jwe_check="$(read_jwe_store_file Clevis.JWE)"
+              write_jwe_store_dataset_file "$unlock_dataset" /tmp/clevis_zfs.jwe
+              write_jwe_store_dataset_file "$unlock_dataset" /tmp/clevis_zfs_1.jwe "_1"
+              write_jwe_store_dataset_file "$unlock_dataset" /tmp/clevis_zfs_4.jwe "_4"
+              write_jwe_store_dataset_file "$unlock_dataset" /tmp/clevis_zfs_5.jwe "_5"
+              write_jwe_store_dataset_file "$unlock_dataset" /tmp/clevis_zfs_7.jwe "_7"
+              write_jwe_store_dataset_file "$unlock_dataset" /tmp/clevis_zfs_9.jwe "_9"
+              jwe_check="$(read_jwe_store_dataset_file "$unlock_dataset")"
               umount_jwe_store
 	    fi
             # check if we are fine

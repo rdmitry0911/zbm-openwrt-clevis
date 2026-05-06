@@ -130,6 +130,9 @@ The image now defaults to:
 Access becomes possible only after a valid password hash or SSH key is applied
 from `kcl`.
 
+In the validated image, leaving the donor `ZBM` TUI by `Ctrl-C` returns to the
+protected OpenWrt system rather than exposing a recovery shell.
+
 ### Manual/automatic race
 
 `zbm-auto-boot` and manual `zbm-start` share the same lock. Manual `zbm-start`
@@ -211,6 +214,9 @@ Telegram message only on automatic unlock failure, with:
 - failure reason
 - hostname
 - current IP address
+- configured PCR set
+- per-PCR status
+- failed PCR list
 
 This is operational telemetry, not a security boundary. Anyone with access to
 the target chat can observe those messages.

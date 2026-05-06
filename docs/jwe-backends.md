@@ -34,14 +34,29 @@ Location:
 
 - EFI variables in `efivarfs`
 
-Variable names:
+Naming rule:
 
-- `55555555-5555-5555-5555-555555555555-ClevisJWE`
-- `55555555-5555-5555-5555-555555555555-ClevisJWE_1`
-- `55555555-5555-5555-5555-555555555555-ClevisJWE_4`
-- `55555555-5555-5555-5555-555555555555-ClevisJWE_5`
-- `55555555-5555-5555-5555-555555555555-ClevisJWE_7`
-- `55555555-5555-5555-5555-555555555555-ClevisJWE_9`
+- derive a tag from the current encryption root
+- replace non `[A-Za-z0-9_.-]` characters with `_`
+
+Example:
+
+- encryption root: `rpool/ROOT/ubuntu`
+- tag: `rpool_ROOT_ubuntu`
+
+Variable names for that example:
+
+- `55555555-5555-5555-5555-555555555555-ClevisJWE_rpool_ROOT_ubuntu`
+- `55555555-5555-5555-5555-555555555555-ClevisJWE_rpool_ROOT_ubuntu_1`
+- `55555555-5555-5555-5555-555555555555-ClevisJWE_rpool_ROOT_ubuntu_4`
+- `55555555-5555-5555-5555-555555555555-ClevisJWE_rpool_ROOT_ubuntu_5`
+- `55555555-5555-5555-5555-555555555555-ClevisJWE_rpool_ROOT_ubuntu_7`
+- `55555555-5555-5555-5555-555555555555-ClevisJWE_rpool_ROOT_ubuntu_9`
+
+Compatibility:
+
+- dataset-specific EFI variable names are tried first
+- legacy generic `ClevisJWE*` EFI variables are still accepted as fallback
 
 Requirements:
 
@@ -51,7 +66,7 @@ Requirements:
 
 Validated result:
 
-- manual reseal wrote the `ClevisJWE*` EFI variables
+- manual reseal wrote the dataset-specific `ClevisJWE_<tag>*` EFI variables
 - next cold boot automatically reached Ubuntu
 
 ## vfat
@@ -74,12 +89,26 @@ clevis.file_location=/dev/vdb1:/clevis
 
 Expected files:
 
-- `Clevis.JWE`
-- `Clevis.JWE_1`
-- `Clevis.JWE_4`
-- `Clevis.JWE_5`
-- `Clevis.JWE_7`
-- `Clevis.JWE_9`
+- `Clevis.<tag>.JWE`
+- `Clevis.<tag>.JWE_1`
+- `Clevis.<tag>.JWE_4`
+- `Clevis.<tag>.JWE_5`
+- `Clevis.<tag>.JWE_7`
+- `Clevis.<tag>.JWE_9`
+
+Example for encryption root `rpool/ROOT/ubuntu`:
+
+- `Clevis.rpool_ROOT_ubuntu.JWE`
+- `Clevis.rpool_ROOT_ubuntu.JWE_1`
+- `Clevis.rpool_ROOT_ubuntu.JWE_4`
+- `Clevis.rpool_ROOT_ubuntu.JWE_5`
+- `Clevis.rpool_ROOT_ubuntu.JWE_7`
+- `Clevis.rpool_ROOT_ubuntu.JWE_9`
+
+Compatibility:
+
+- dataset-specific file names are tried first
+- legacy generic `Clevis.JWE*` file names are still accepted as fallback
 
 Requirements:
 

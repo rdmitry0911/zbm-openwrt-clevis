@@ -112,9 +112,12 @@ zbm-start
 After reseal, confirm that `efivar` storage exists:
 
 ```bash
-efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE -p
-efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_1 -p
+efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_rpool_ROOT_ubuntu_iu2exh -p
+efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_rpool_ROOT_ubuntu_iu2exh_1 -p
 ```
+
+If the active encryption root differs, replace `rpool_ROOT_ubuntu_iu2exh`
+with the sanitized encryption-root tag.
 
 Second boot:
 
@@ -161,12 +164,15 @@ umount /mnt/testvfat
 
 Expected files:
 
-- `Clevis.JWE`
-- `Clevis.JWE_1`
-- `Clevis.JWE_4`
-- `Clevis.JWE_5`
-- `Clevis.JWE_7`
-- `Clevis.JWE_9`
+- `Clevis.rpool_ROOT_ubuntu_iu2exh.JWE`
+- `Clevis.rpool_ROOT_ubuntu_iu2exh.JWE_1`
+- `Clevis.rpool_ROOT_ubuntu_iu2exh.JWE_4`
+- `Clevis.rpool_ROOT_ubuntu_iu2exh.JWE_5`
+- `Clevis.rpool_ROOT_ubuntu_iu2exh.JWE_7`
+- `Clevis.rpool_ROOT_ubuntu_iu2exh.JWE_9`
+
+If the active encryption root differs, replace `rpool_ROOT_ubuntu_iu2exh`
+with the sanitized encryption-root tag.
 
 Second boot:
 
@@ -188,3 +194,9 @@ Automatic ZBM start has not finished yet. Please try again later.
 ```
 
 then the automatic instance is still running. Wait until it exits and try again. This is expected and is enforced by the global `ZBM` lock.
+
+## Exiting the TUI
+
+In the validated image, `Ctrl-C` in the donor `ZBM` TUI exits back to the
+protected OpenWrt system. It no longer drops into a recovery shell, and the
+old direct chroot shortcuts are disabled.

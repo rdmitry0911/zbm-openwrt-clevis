@@ -153,6 +153,8 @@ The OpenWrt runtime contains:
 - helper wrappers for boot lifecycle, locking, and command-line processing
 - `efivar` and `efivarfs` support
 - `vfat` support for file-backed `JWE` storage
+- `mc`
+- `nano-plus`
 
 ## Automatic and manual lifecycle
 
@@ -176,6 +178,8 @@ The policy is intentionally strict:
 - if the operator starts `zbm-start` while the automatic instance is still running, the operator gets a warning and must try again later
 - auto mode must never stop to ask for human input
 - manual reseal happens inside the same `zbm-start -> hook -> zbm-end` path, not as a separate maintenance mode
+- `Ctrl-C` in the donor `ZBM` TUI exits back to the protected OpenWrt system
+- the old shell-escape and direct chroot shortcuts are disabled in the validated image
 
 The hook distinguishes auto vs manual mode by the presence of `/run/zbm-autoboot.done`:
 
@@ -207,3 +211,27 @@ Only one narrow path flips to read-write:
 - only for the short write of refreshed `latchset.clevis:*` properties
 
 After the write, the pool is returned to read-only import mode.
+
+## Naming of `efi` and `vfat` JWE storage
+
+The `zfs` backend naturally stores properties on the current encryption root,
+so multiple encrypted roots do not collide there.
+
+For the `efi` and `vfat` backends, the current implementation now derives a
+storage tag from the active encryption root by replacing non
+`[A-Za-z0-9_.-]` characters with `_`.
+
+Example:
+
+- encryption root: `rpool/ROOT/ubuntu`
+- tag: `rpool_ROOT_ubuntu`
+
+That tag is then used in the stored object names:
+
+- `efi`: `ClevisJWE_<tag>`, `ClevisJWE_<tag>_1`, ...
+- `vfat`: `Clevis.<tag>.JWE`, `Clevis.<tag>.JWE_1`, ...
+
+Read path compatibility is preserved:
+
+- dataset-specific names are tried first
+- legacy generic names are still accepted as fallback
