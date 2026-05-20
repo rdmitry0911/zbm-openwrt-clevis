@@ -44,6 +44,7 @@ The result is a split design:
 ## Repo layout
 
 - [docs/architecture.md](docs/architecture.md): boot model, relation to `rEFInd`, runtime components, user interaction
+- [docs/use-cases.md](docs/use-cases.md): practical remote-server and unattended-laptop scenarios
 - [docs/threat-model.md](docs/threat-model.md): assumptions, protected assets, defended and non-defended threats
 - [docs/kcl-options.md](docs/kcl-options.md): full list of `kcl` options consumed by the package
 - [docs/build-and-install.md](docs/build-and-install.md): build flow, UKI generation, `rEFInd` setup, installation notes

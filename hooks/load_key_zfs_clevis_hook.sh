@@ -141,6 +141,18 @@ kcl_get()
                                 [ -n "${ZBM_CLEVIS_PCR_IDS:-}" ] && { printf '%s' "${ZBM_CLEVIS_PCR_IDS}"; return 0; }
                                 ;;
                         clevis.host)
+                                value="$(awk -v key="${key}" '
+                                        {
+                                                for (i = 1; i <= NF; i++) {
+                                                        if ($i ~ ("^" key "=")) {
+                                                                sub("^" key "=", "", $i)
+                                                                print $i
+                                                                exit
+                                                        }
+                                                }
+                                        }
+                                ' /proc/cmdline)"
+                                [ -n "${value}" ] && { printf '%s' "${value}"; return 0; }
                                 [ -n "${ZBM_HOST:-}" ] && { printf '%s' "${ZBM_HOST}"; return 0; }
                                 ;;
                         clevis.CHAT_ID)
