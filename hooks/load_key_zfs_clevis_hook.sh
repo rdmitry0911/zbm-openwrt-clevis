@@ -130,6 +130,76 @@ keyfile_created_by_hook()
   [ -e "$(keyfile_marker "${path}")" ]
 }
 
+dataset_encryption_root()
+{
+  local dataset="$1"
+  local root
+
+  root="$(zfs get -H -o value encryptionroot "${dataset}" 2>/dev/null || true)"
+  if [[ -n "${root}" && "${root}" != "-" ]]; then
+    printf '%s' "${root}"
+    return 0
+  fi
+
+  return 1
+}
+
+target_matches_unlock_dataset()
+{
+  local unlock_dataset="$1"
+  local target="$2"
+  local target_root
+
+  [[ -n "${target}" && "${target}" != "-" ]] || return 1
+  [[ "${target}" == "${unlock_dataset}" ]] && return 0
+
+  target_root="$(dataset_encryption_root "${target}" || true)"
+  [[ -n "${target_root}" && "${target_root}" == "${unlock_dataset}" ]]
+}
+
+unlock_dataset_is_boot_target()
+{
+  local unlock_dataset="$1"
+  local target seen
+
+  seen=""
+  for target in "${ZBM_AUTO_BOOTFS:-}" "${ZBM_ZFSBOOTMENU_BOOTFS:-}" "${BOOTFS:-}" "${zbm_prefer_bootfs:-}"; do
+    [[ -n "${target}" && "${target}" != "-" ]] || continue
+    case " ${seen} " in
+      *" ${target} "*) continue ;;
+    esac
+    target_matches_unlock_dataset "${unlock_dataset}" "${target}" && return 0
+    seen="${seen} ${target}"
+  done
+
+  return 1
+}
+
+unlock_dataset_has_local_clevis_decrypt()
+{
+  local unlock_dataset="$1"
+  local value
+
+  value="$(zfs get -H -p -o value latchset.clevis:decrypt -s local "${unlock_dataset}" 2>/dev/null || true)"
+  case "${value,,}" in
+    yes|y|true|t|1|on)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+unlock_dataset_clevis_allowed()
+{
+  local unlock_dataset="$1"
+
+  unlock_dataset_has_local_clevis_decrypt "${unlock_dataset}" && return 0
+  unlock_dataset_is_boot_target "${unlock_dataset}" && return 0
+
+  return 1
+}
+
 pcr_check_status()
 {
   local payload="$1"
@@ -1079,6 +1149,10 @@ load_key_clevis() {
   reset_pcr_statuses
   CLEVIS_CHECK="$(kcl_get clevis.decrypt || true)"
   if [[ "$CLEVIS_CHECK" == "yes" ]]; then
+    if ! unlock_dataset_clevis_allowed "${unlock_dataset}"; then
+      zdebug "Skipping clevis unlock for non-boot dataset $unlock_dataset"
+      return 2
+    fi
     zdebug "Found dataset for clevis unlocking: $unlock_dataset"
     KEYLOCATION="$(get_fs_value "${unlock_dataset}" keylocation)" || KEYLOCATION=
     KEYFILE="${KEYLOCATION#file://}"

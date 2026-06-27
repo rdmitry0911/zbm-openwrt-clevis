@@ -31,6 +31,18 @@ owrt.ssh_pubkey=""ssh-ed25519 AAAAC3... comment""
 - Consumer: `zbm-kcl-apply`, `load_key` hook
 - Meaning: enables the `clevis`-based automatic unlock path
 
+This is a global enable switch, not a dataset wildcard. When it is `yes`, the
+hook will handle only:
+
+- the encryption root of `owrt.auto_bootfs` or current `BOOTFS`
+- encryption roots explicitly marked with a local
+  `latchset.clevis:decrypt=yes` property
+
+Other locked encryption roots are skipped without falling through to the normal
+password prompt during this Clevis-controlled boot path. This prevents unrelated
+pools from asking for reseal or passphrases while the selected boot environment
+is being recovered.
+
 ### `clevis.store`
 
 - Alias: `owrt.clevis_store`
@@ -122,10 +134,12 @@ This is the default unattended reseal path used by
 - Example: `rpool/ROOT/ubuntu_iu2exh`
 - Default: empty
 - Consumer: `zbm-kcl-apply`
-- Current status: exported into the runtime env but not enforced as a hard
-  selector in the current `zbm-auto-boot` implementation
+- Meaning: preferred boot environment and primary Clevis unlock target
 
-Treat this as reserved future policy, not as a currently guaranteed boot filter.
+When this is set, the Clevis hook treats the encryption root of this boot
+environment as the primary automatic unlock/reseal target. Other encrypted
+datasets are ignored unless they carry their own local
+`latchset.clevis:decrypt=yes` property.
 
 ### `owrt.console_rotate`
 

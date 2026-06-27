@@ -1814,9 +1814,17 @@ load_key() {
   # Run early load_key hooks, if they exist
   if [ -d /libexec/load_key.d ]; then
     for _hook in /libexec/load_key.d/*; do
+      local _hook_rc
+
       zinfo "Processing hook: ${_hook}"
       [ -x "${_hook}" ] || continue
-      if ! "${_hook}" "${encroot}"; then
+      ZBM_ZFSBOOTMENU_BOOTFS="${BOOTFS:-}" "${_hook}" "${encroot}"
+      _hook_rc=$?
+      if [ "${_hook_rc}" -eq 2 ]; then
+        zdebug "load-key hook '${_hook}' skipped default prompt for '${encroot}'"
+        return 1
+      fi
+      if [ "${_hook_rc}" -ne 0 ]; then
         zwarn "load-key hook '${_hook}' failed for '${encroot}', aborting load attempt"
         return 1
       fi
