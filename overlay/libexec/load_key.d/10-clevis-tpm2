@@ -1110,7 +1110,7 @@ reseal_data_set()
   echo "Configured PCRs: ${PCR_IDS}" >&2
   read -r -p "Reseal password [yes/no]: " SRESEAL
   seq=3
-  if [[ "$SRESEAL" == "yes" ]]; then
+  if [[ "$SRESEAL" == "yes" || "$SRESEAL" == "y" ]]; then
     while [[ "$seq" -gt 0 ]]
     do
       read -r -s -p "Enter ZFS password for ${1} (${seq} attempt(s) left): " PASS
@@ -1333,7 +1333,7 @@ load_key_clevis() {
 	            return 0
           else
             # We don't want to reseal
-            return 0
+            return 2
           fi
         fi
     else

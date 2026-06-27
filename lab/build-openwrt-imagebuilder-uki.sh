@@ -34,6 +34,12 @@ STUB="${STUB:-/usr/lib/systemd/boot/efi/linuxx64.efi.stub}"
 WORLD_REF="${WORLD_REF:-${TOPDIR}/lab/openwrt-current-world.txt}"
 OVERLAY_DIR="${OVERLAY_DIR:-${TOPDIR}/overlay}"
 HOST_TOOL_ROOTFS="${HOST_TOOL_ROOTFS:-/tmp/openwrt-zbm-rootfs}"
+TPM_CRB_KO="${TPM_CRB_KO:-}"
+KEXEC_TOOLS_PATCH_DIR="${KEXEC_TOOLS_PATCH_DIR:-${TOPDIR}/patches/kexec-tools}"
+KEXEC_TOOLS_VERSION="${KEXEC_TOOLS_VERSION:-2.0.28}"
+KEXEC_TOOLS_URL="${KEXEC_TOOLS_URL:-https://cdn.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_TOOLS_VERSION}.tar.xz}"
+KEXEC_TOOLS_HASH="${KEXEC_TOOLS_HASH:-d2f0ef872f39e2fe4b1b01feb62b0001383207239b9f8041f98a95564161d053}"
+PATCHED_KEXEC="${PATCHED_KEXEC:-${BUILDDIR}/kexec-tools-${KEXEC_TOOLS_VERSION}-patched/install/usr/sbin/kexec}"
 
 IB_DIR="${IB_DIR:-${BUILDDIR}/imagebuilder}"
 SDK_DIR="${SDK_DIR:-${BUILDDIR}/sdk}"
@@ -203,6 +209,101 @@ kernel_release() {
   fi
   [ -n "${rel}" ] || die "cannot determine kernel release"
   printf '%s' "${rel}"
+}
+
+find_tpm_crb_ko() {
+  local ko
+
+  if [ -n "${TPM_CRB_KO}" ]; then
+    [ -f "${TPM_CRB_KO}" ] || die "TPM_CRB_KO does not exist: ${TPM_CRB_KO}"
+    printf '%s' "${TPM_CRB_KO}"
+    return 0
+  fi
+
+  ko="$(find "${TOPDIR}/dist/openwrt-release-build/src/openwrt-${OPENWRT_VERSION}" \
+      -path '*/linux-x86_64/linux-*/drivers/char/tpm/tpm_crb.ko' \
+      -type f 2>/dev/null | sort -V | tail -n 1)"
+  [ -n "${ko}" ] || return 1
+  printf '%s' "${ko}"
+}
+
+install_extra_kernel_modules() {
+  local krel ko dest
+
+  krel="$(kernel_release)"
+  if ! ko="$(find_tpm_crb_ko)"; then
+    die "missing tpm_crb.ko; build it with CONFIG_TCG_CRB=m or set TPM_CRB_KO=/path/to/tpm_crb.ko"
+  fi
+
+  dest="${FILES_DIR}/lib/modules/${krel}"
+  mkdir -p "${dest}"
+  log "installing extra kernel module tpm_crb.ko from ${ko}"
+  install -m 0644 "${ko}" "${dest}/tpm_crb.ko"
+  install -m 0644 "${ko}" "${dest}/tpm_crb.good.ko"
+}
+
+build_patched_kexec() {
+  local tarball builddir install_dir patch_file hash
+
+  [ -d "${KEXEC_TOOLS_PATCH_DIR}" ] || die "missing kexec-tools patch directory: ${KEXEC_TOOLS_PATCH_DIR}"
+
+  tarball="${BUILDDIR}/downloads/kexec-tools-${KEXEC_TOOLS_VERSION}.tar.xz"
+  builddir="${BUILDDIR}/kexec-tools-${KEXEC_TOOLS_VERSION}-patched/src"
+  install_dir="${BUILDDIR}/kexec-tools-${KEXEC_TOOLS_VERSION}-patched/install"
+
+  download "${KEXEC_TOOLS_URL}" "${tarball}"
+  hash="$(sha256sum "${tarball}" | awk '{print $1}')"
+  [ "${hash}" = "${KEXEC_TOOLS_HASH}" ] || die "kexec-tools tarball hash mismatch: ${hash}"
+
+  rm -rf "${builddir}" "${install_dir}"
+  mkdir -p "${builddir}" "${install_dir}"
+  run tar -xf "${tarball}" -C "${builddir}" --strip-components=1
+
+  for patch_file in "${KEXEC_TOOLS_PATCH_DIR}"/*.patch; do
+    [ -f "${patch_file}" ] || continue
+    log "applying kexec-tools patch: ${patch_file}"
+    ( cd "${builddir}" && patch -p1 < "${patch_file}" )
+  done
+
+  log "building patched kexec-tools ${KEXEC_TOOLS_VERSION}"
+  (
+    set -Eeuo pipefail
+    cd "${builddir}"
+    ./configure \
+      --prefix=/usr \
+      --sbindir=/usr/sbin \
+      --without-zlib \
+      --without-lzma
+    make -j"${JOBS}"
+    make DESTDIR="${install_dir}" install
+  )
+
+  [ -x "${PATCHED_KEXEC}" ] || die "patched kexec build did not produce ${PATCHED_KEXEC}"
+  strip --strip-unneeded "${PATCHED_KEXEC}"
+}
+
+install_patched_kexec() {
+  [ -x "${PATCHED_KEXEC}" ] || die "missing patched kexec binary: ${PATCHED_KEXEC}"
+
+  log "installing patched kexec from ${PATCHED_KEXEC}"
+  install -d "${FILES_DIR}/usr/sbin" "${FILES_DIR}/sbin"
+  install -m 0755 "${PATCHED_KEXEC}" "${FILES_DIR}/usr/sbin/kexec"
+  ln -snf ../usr/sbin/kexec "${FILES_DIR}/sbin/kexec"
+}
+
+module_this_module_size() {
+  readelf -S --wide "$1" | awk '
+    $0 ~ /\.gnu\.linkonce\.this_module/ {
+      for (i = 1; i <= NF; i++) {
+        if ($i == ".gnu.linkonce.this_module") {
+          print $(i + 4)
+          found = 1
+          exit
+        }
+      }
+    }
+    END { if (!found) exit 1 }
+  '
 }
 
 build_openzfs() {
@@ -423,6 +524,8 @@ prepare_files_overlay() {
   install_clevis_scripts
   install_donor_glibc_tools
   install_repo_overlay
+  install_extra_kernel_modules
+  install_patched_kexec
 }
 
 sanitize_package_name() {
@@ -432,17 +535,47 @@ sanitize_package_name() {
 imagebuilder_packages() {
   {
     sanitize_package_name < "${WORLD_REF}" \
-      | grep -Ev '^(base-files|kernel|libc|fzf|mawk|tpm2|tpm2-tools|kmod-tpm-crb)$'
+      | grep -Ev '^(base-files|kernel|libc|fzf|mawk|tpm2|tpm2-tools|kmod-tpm-crb)$' \
+      | grep -Ev '^(i915-firmware-dmc|kmod-acpi-video|kmod-backlight|kmod-dma-buf|kmod-drm.*)$' \
+      | grep -Ev '(amdgpu|i915|nouveau|nvidia)'
     printf '%s\n' \
       bash \
+      blkid \
+      blockdev \
+      btrfs-progs \
+      cfdisk \
       cryptsetup \
+      fdisk \
+      f2fs-tools \
+      hdparm \
       jose \
       jq \
       libatomic \
       libtirpc \
       coreutils \
       gawk \
-      less
+      less \
+      losetup \
+      lsblk \
+      mount-utils \
+      nvme-cli \
+      sfdisk \
+      smartmontools \
+      swap-utils \
+      wipefs \
+      -i915-firmware-dmc \
+      -kmod-acpi-video \
+      -kmod-backlight \
+      -kmod-dma-buf \
+      -kmod-drm \
+      -kmod-drm-buddy \
+      -kmod-drm-display-helper \
+      -kmod-drm-exec \
+      -kmod-drm-i915 \
+      -kmod-drm-kms-helper \
+      -kmod-drm-suballoc-helper \
+      -kmod-drm-ttm \
+      -kmod-drm-ttm-helper
   } | sort -u | tr '\n' ' '
 }
 
@@ -489,7 +622,7 @@ create_initramfs() {
 }
 
 validate_rootfs() {
-  local rootdir krel missing path
+  local rootdir krel missing path tpm_mod crb_mod tpm_module_size crb_module_size
 
   rootdir="$(find_ib_rootfs_dir)"
   [ -n "${rootdir}" ] || die "cannot locate Image Builder rootfs"
@@ -517,10 +650,13 @@ validate_rootfs() {
     "/usr/bin/fzf" \
     "/usr/bin/jose" \
     "/usr/bin/jq" \
+    "/usr/sbin/kexec" \
     "/usr/sbin/zfs" \
     "/usr/sbin/zpool" \
     "/lib/modules/${krel}/spl.ko" \
-    "/lib/modules/${krel}/zfs.ko"; do
+    "/lib/modules/${krel}/zfs.ko" \
+    "/lib/modules/${krel}/tpm_crb.ko" \
+    "/lib/modules/${krel}/tpm_crb.good.ko"; do
     if [ ! -e "${rootdir}${path}" ]; then
       printf 'missing rootfs path: %s\n' "${path}" >&2
       missing=1
@@ -545,6 +681,22 @@ validate_rootfs() {
   if grep -Rqs 'exit 0' "${rootdir}/lib/profiling-lib.sh"; then
     printf 'profiling-lib.sh must not exit sourced callers\n' >&2
     missing=1
+  fi
+
+  tpm_mod="${rootdir}/lib/modules/${krel}/tpm.ko"
+  crb_mod="${rootdir}/lib/modules/${krel}/tpm_crb.ko"
+  if [ -e "${tpm_mod}" ] && [ -e "${crb_mod}" ]; then
+    if ! tpm_module_size="$(module_this_module_size "${tpm_mod}")"; then
+      printf 'cannot read .gnu.linkonce.this_module size from %s\n' "${tpm_mod}" >&2
+      missing=1
+    elif ! crb_module_size="$(module_this_module_size "${crb_mod}")"; then
+      printf 'cannot read .gnu.linkonce.this_module size from %s\n' "${crb_mod}" >&2
+      missing=1
+    elif [ "${tpm_module_size}" != "${crb_module_size}" ]; then
+      printf 'tpm_crb.ko ABI mismatch: this_module size %s, expected %s from tpm.ko\n' \
+        "${crb_module_size}" "${tpm_module_size}" >&2
+      missing=1
+    fi
   fi
 
   [ "${missing}" = "0" ] || die "rootfs validation failed"
@@ -585,8 +737,41 @@ EOF
   run ukify inspect "${UKI}"
 }
 
+validate_uki_initrd() {
+  local rootdir krel work mod root_mod uki_mod root_hash uki_hash
+
+  rootdir="$(find_ib_rootfs_dir)"
+  [ -n "${rootdir}" ] || die "cannot locate Image Builder rootfs"
+  krel="$(kernel_release)"
+
+  work="${BUILDDIR}/validate-uki-initrd"
+  rm -rf "${work}"
+  mkdir -p "${work}/extract"
+
+  cp -f "${UKI}" "${work}/uki.efi"
+  run objcopy --dump-section ".initrd=${work}/initrd.gz" "${work}/uki.efi"
+  (
+    cd "${work}/extract"
+    gzip -dc "${work}/initrd.gz" | cpio -id --quiet \
+      "lib/modules/${krel}/tpm_crb.ko" \
+      "lib/modules/${krel}/tpm_crb.good.ko"
+  )
+
+  for mod in tpm_crb.ko tpm_crb.good.ko; do
+    root_mod="${rootdir}/lib/modules/${krel}/${mod}"
+    uki_mod="${work}/extract/lib/modules/${krel}/${mod}"
+    [ -f "${root_mod}" ] || die "missing rootfs ${mod}: ${root_mod}"
+    [ -f "${uki_mod}" ] || die "missing ${mod} in UKI initrd"
+    root_hash="$(sha256sum "${root_mod}" | awk '{print $1}')"
+    uki_hash="$(sha256sum "${uki_mod}" | awk '{print $1}')"
+    if [ "${root_hash}" != "${uki_hash}" ]; then
+      die "UKI initrd ${mod} mismatch: ${uki_hash}, expected ${root_hash}"
+    fi
+  done
+}
+
 main() {
-  for tool in git curl make gcc g++ python3 perl awk sed tar cpio gzip rsync zstd patch objcopy readelf ukify autoconf automake libtoolize pkg-config bison flex fakeroot; do
+  for tool in git curl make gcc g++ python3 perl awk sed tar cpio gzip xz rsync zstd patch strip objcopy readelf ukify autoconf automake libtoolize pkg-config bison flex fakeroot; do
     need "${tool}"
   done
 
@@ -595,12 +780,14 @@ main() {
   log "versions: OpenWrt=${OPENWRT_VERSION} ZFSBootMenu=${ZFSBOOTMENU_REF} Clevis=${CLEVIS_REF} OpenZFS=${OPENZFS_REF}"
   prepare_openwrt_tools
   prepare_sdk_staging
+  build_patched_kexec
   prepare_files_overlay
   build_openzfs
   build_imagebuilder_rootfs
   create_initramfs
   validate_rootfs
   build_uki
+  validate_uki_initrd
 
   log "UKI=${UKI}"
 }

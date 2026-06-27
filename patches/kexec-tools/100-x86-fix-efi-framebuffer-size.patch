@@ -1,0 +1,30 @@
+Linux interprets screen_info.lfb_size differently for VESA and EFI
+framebuffers. VESA keeps the historical 64 KiB unit, while EFI uses bytes.
+
+setup_linux_vesafb() always stored fix.smem_len in 64 KiB units. A target
+kernel with SYSFB_SIMPLEFB/DRM_SIMPLEDRM can then reject the handoff with:
+
+  sysfb: VRAM smaller than advertised
+
+because the visible mode size is larger than the tiny EFI lfb_size value.
+Keep the historical value for VESA, but pass bytes for EFI.
+
+--- a/kexec/arch/i386/x86-linux-setup.c
++++ b/kexec/arch/i386/x86-linux-setup.c
+@@ -176,8 +176,14 @@ static int setup_linux_vesafb(struct x86
+ 	}
+ 
+ 	/* FIXME: better get size from the file returned by proc_iomem() */
+-	real_mode->lfb_size       = (fix.smem_len + 65535) / 65536;
+-	real_mode->pages          = (fix.smem_len + 4095) / 4096;
++	if (real_mode->orig_video_isVGA == 0x70) {
++		/* VIDEO_TYPE_EFI uses bytes in screen_info.lfb_size. */
++		real_mode->lfb_size = fix.smem_len;
++	} else {
++		/* VIDEO_TYPE_VLFB keeps the historical 64 KiB unit. */
++		real_mode->lfb_size = (fix.smem_len + 65535) / 65536;
++	}
++	real_mode->pages = (fix.smem_len + 4095) / 4096;
+ 
+ 	if (var.bits_per_pixel > 8) {
+ 		real_mode->red_pos    = var.red.offset;

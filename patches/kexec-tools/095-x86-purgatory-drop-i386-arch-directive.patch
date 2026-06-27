@@ -1,0 +1,25 @@
+Recent binutils rejects `.arch i386` while assembling these compatibility
+entry stubs as x86_64 ELF objects. The files already switch code generation
+with `.code32` and `.code16`, so keep the code-mode directives and drop the
+architecture downgrade.
+
+--- a/purgatory/arch/i386/entry32-16.S
++++ b/purgatory/arch/i386/entry32-16.S
+@@ -21,5 +21,4 @@
+ 	.text
+ 	.globl entry16, entry16_regs
+-	.arch i386
+ 	.balign 16
+ entry16:
+ 	.code32
+--- a/purgatory/arch/i386/entry32-16-debug.S
++++ b/purgatory/arch/i386/entry32-16-debug.S
+@@ -24,7 +24,6 @@
+ 	.globl entry16_debug, entry16_debug_regs
+ 	.globl entry16_debug_pre32
+ 	.globl entry16_debug_first32
+ 	.globl entry16_debug_old_first32
+-	.arch i386
+ 	.balign 16
+ entry16_debug:
+ 	.code32

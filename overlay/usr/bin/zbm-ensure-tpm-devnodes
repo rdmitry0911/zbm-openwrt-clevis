@@ -1,6 +1,35 @@
 #!/bin/sh
 set -eu
 
+KVER="$(uname -r)"
+MODDIR="/lib/modules/${KVER}"
+
+module_loaded() {
+  grep -q "^${1} " /proc/modules 2>/dev/null
+}
+
+load_module() {
+  local mod="$1"
+  local ko
+
+  module_loaded "${mod}" && return 0
+
+  if [ "${mod}" = "tpm_crb" ] && [ -f "${MODDIR}/tpm_crb.good.ko" ]; then
+    insmod "${MODDIR}/tpm_crb.good.ko" 2>/dev/null && return 0
+  fi
+
+  if command -v modprobe >/dev/null 2>&1 && modprobe "${mod}" 2>/dev/null; then
+    return 0
+  fi
+
+  ko="$(find "${MODDIR}" -type f -name "${mod}.ko" 2>/dev/null | head -n 1)"
+  if [ -n "${ko}" ]; then
+    insmod "${ko}" 2>/dev/null && return 0
+  fi
+
+  return 1
+}
+
 create_node() {
   local sysdir name dev major minor
 
@@ -16,6 +45,10 @@ create_node() {
   [ -n "${major}" ] && [ -n "${minor}" ] || return 0
   mknod "/dev/${name}" c "${major}" "${minor}" 2>/dev/null || true
 }
+
+for mod in tpm tpm_crb tpm_tis_core tpm_tis; do
+  load_module "${mod}" || true
+done
 
 mkdir -p /dev
 create_node /sys/class/tpm/tpm0 tpm0
