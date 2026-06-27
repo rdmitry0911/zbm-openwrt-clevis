@@ -2,8 +2,10 @@
 
 This page lists the `kcl` parameters currently consumed by the package.
 
-The current validated path reads them from the `options` string of a manual
-`rEFInd` `menuentry` in `refind.conf`, not from `refind_linux.conf`.
+The current validated path reads them from `rEFInd`. When the OpenWrt image is
+named with a `vmlinuz-` prefix, `rEFInd` applies the adjacent
+`refind_linux.conf`; manual `menuentry` options in `refind.conf` are also
+supported.
 
 ## Parsing and quoting
 
@@ -53,11 +55,17 @@ replacing non `[A-Za-z0-9_.-]` characters with `_`.
 - Alias: `owrt.clevis_file_location`
 - Value format: `DEVICE:SUBDIRECTORY`
 - Example: `/dev/vdb1:/clevis`
-- Default: empty
+- Default: for `clevis.store=vfat`, `./jwe` next to the loaded `vmlinuz-*`
+  image, expressed as `DEVICE:/path/to/image-directory/jwe`
 - Consumer: `zbm-kcl-apply`, `load_key` hook
 - Meaning: location of `JWE` files for the `vfat` backend
 
-This is required only for `clevis.store=vfat`.
+This is an override for `clevis.store=vfat`. If it is omitted,
+`zbm-kcl-apply` uses `LoaderDevicePartUUID` to identify the ESP that loaded the
+image and `LoaderImageIdentifier` to identify the loaded `vmlinuz-*` path, then
+derives `DEVICE:<image-directory>/jwe`. If `LoaderImageIdentifier` is not
+available, it falls back to the command-line `BOOT_IMAGE` value and finally to
+the adjacent `refind_linux.conf` directory on the ESP.
 
 ### `clevis.pcr_ids`
 
@@ -72,6 +80,42 @@ For the currently validated project configuration, `1,4,5,7,9` is the intended
 set. In this chain it covers the relevant external `rEFInd` `kcl`, so changing
 those arguments must break automatic unlock until a new reseal is done.
 
+### `clevis.reseal_key_fwcfg`
+
+- Alias: `owrt.clevis_reseal_key_fwcfg`
+- Value format: QEMU fw_cfg item name
+- Example: `opt/zbm/reseal-key`
+- Default: empty
+- Consumer: `zbm-kcl-apply`, `load_key` hook
+- Meaning: lab-only unattended reseal source for QEMU tests
+
+When this is set, the hook reads the passphrase from
+`/sys/firmware/qemu_fw_cfg/by_name/<value>/raw`, verifies it with
+`zfs load-key -n`, and only then reseals the Clevis JWE for the current PCR
+state. The passphrase itself is not placed on the kernel command line.
+
+Do not use this as a normal production secret-delivery mechanism. It exists so
+the QEMU e2e lab can perform the expected first-boot reseal after a UKI or
+`rEFInd` option change, then verify the following cold boot without manual
+input.
+
+### `clevis.reseal_key_blockdev`
+
+- Alias: `owrt.clevis_reseal_key_blockdev`
+- Value format: block device path
+- Example: `/dev/vdc`
+- Default: empty
+- Consumer: `zbm-kcl-apply`, `load_key` hook
+- Meaning: lab-only unattended reseal source for QEMU tests
+
+When this is set, the hook reads the first small block from the device, strips
+zero padding, verifies the resulting passphrase with `zfs load-key -n`, and
+only then reseals the Clevis JWE for the current PCR state. The passphrase
+itself is not placed on the kernel command line.
+
+This is the default unattended reseal path used by
+`lab/run-qemu-multigpu-zfs.sh` when `RESEAL_KEY_FILE` is set.
+
 ### `owrt.auto_bootfs`
 
 - Value format: ZFS dataset name
@@ -82,6 +126,74 @@ those arguments must break automatic unlock until a new reseal is done.
   selector in the current `zbm-auto-boot` implementation
 
 Treat this as reserved future policy, not as a currently guaranteed boot filter.
+
+### `owrt.console_rotate`
+
+- Alias: `owrt.fbcon_rotate`
+- Values: `normal`, `right`, `inverted`, `left`, or numeric `0`, `1`, `2`, `3`
+- Default: empty
+- Consumer: `zbm-kcl-apply`
+- Meaning: rotates the OpenWrt framebuffer console by writing the normalized
+  value into `/sys/class/graphics/fbcon/rotate_all` when available, falling
+  back to `/sys/class/graphics/fbcon/rotate`
+
+The named values map to Linux fbcon rotation values:
+
+- `normal`: `0`
+- `right`: `1`
+- `inverted`: `2`
+- `left`: `3`
+
+### `owrt.target_console_rotate`
+
+- Alias: `owrt.target_fbcon_rotate`
+- Values: `normal`, `right`, `inverted`, `left`, or numeric `0`, `1`, `2`, `3`
+- Default: empty
+- Consumer: `zbm-kcl-apply`, donor `ZFSBootMenu` runtime
+- Meaning: appends `fbcon=rotate:<value>` to the target Linux command line
+  when donor `ZFSBootMenu` loads the selected kernel and `initramfs` with
+  `kexec`
+
+This does not move the target kernel or `initramfs` out of the encrypted ZFS
+root. It only alters the command line used for the final handoff.
+
+### `owrt.target_fbcon_map`
+
+- Value format: Linux `fbcon=map:` value
+- Default: empty
+- Consumer: `zbm-kcl-apply`, donor `ZFSBootMenu` runtime
+- Meaning: appends `fbcon=map:<value>` to the target Linux command line
+
+Use this when a multi-GPU system needs the Linux console bound to a specific
+framebuffer after `kexec`.
+
+### `owrt.target_kcl_append`
+
+- Value format: quoted kernel command line fragment
+- Default: empty
+- Consumer: `zbm-kcl-apply`, donor `ZFSBootMenu` runtime
+- Meaning: tokenizes and appends the supplied fragment to the target Linux
+  command line after reading the selected boot environment's normal command
+  line
+
+Example:
+
+```conf
+owrt.target_kcl_append=""console=tty0 console=ttyS0,115200n8 video=DP-1:1920x1080@60""
+```
+
+### `owrt.target_kcl_override`
+
+- Value format: quoted full kernel command line
+- Default: empty
+- Consumer: `zbm-kcl-apply`, donor `ZFSBootMenu` runtime
+- Meaning: replaces the selected boot environment's normal command line before
+  donor `ZFSBootMenu` appends required values such as `spl_hostid`,
+  `noresume`, and the optional target console parameters above
+
+Use this only as a debug escape hatch. For the multi-GPU console case,
+`owrt.target_kcl_append`, `owrt.target_console_rotate`, and
+`owrt.target_fbcon_map` are narrower and safer.
 
 ## Access control
 

@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+create_node() {
+  local sysdir name dev major minor
+
+  sysdir="${1}"
+  name="${2}"
+  [ -r "${sysdir}/dev" ] || return 0
+  [ -e "/dev/${name}" ] && return 0
+
+  dev="$(cat "${sysdir}/dev" 2>/dev/null || true)"
+  [ -n "${dev}" ] || return 0
+  major="${dev%%:*}"
+  minor="${dev##*:}"
+  [ -n "${major}" ] && [ -n "${minor}" ] || return 0
+  mknod "/dev/${name}" c "${major}" "${minor}" 2>/dev/null || true
+}
+
+mkdir -p /dev
+create_node /sys/class/tpm/tpm0 tpm0
+create_node /sys/class/tpmrm/tpmrm0 tpmrm0

@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+if [ -r /run/zfsbootmenu-init.pid ]; then
+  pid="$(cat /run/zfsbootmenu-init.pid 2>/dev/null || true)"
+  [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true
+  rm -f /run/zfsbootmenu-init.pid
+fi
+
+rm -f /zfsbootmenu/active /zfsbootmenu/bootenvs /zfsbootmenu/initialized

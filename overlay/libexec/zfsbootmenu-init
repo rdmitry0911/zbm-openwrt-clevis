@@ -1,0 +1,111 @@
+#!/bin/bash
+# vim: softtabstop=2 shiftwidth=2 expandtab
+
+# disable ctrl-c (SIGINT)
+trap '' SIGINT
+
+# Source functional libraries, logging and configuration
+sources=(
+  /lib/profiling-lib.sh
+  /etc/zfsbootmenu.conf
+  /lib/zfsbootmenu-kcl.sh
+  /lib/zfsbootmenu-core.sh
+  /lib/kmsg-log-lib.sh
+  /etc/profile
+)
+
+for src in "${sources[@]}"; do
+  # shellcheck disable=SC1090
+  if ! source "${src}" >/dev/null 2>&1 ; then
+    echo -e "\033[0;31mWARNING: ${src} was not sourced; unable to proceed\033[0m"
+    exec /bin/bash
+  fi
+done
+
+unset src sources
+
+mkdir -p "${BASE:=/zfsbootmenu}"
+export BASE
+auto_boot="${ZBM_AUTO_BOOT:-0}"
+
+# explicitly mount efivarfs as read-only
+mount_efivarfs "ro"
+
+# Normalize any forcing variable
+case "${ZFSBOOTMENU_FORCE_INIT,,}" in
+  yes|y|true|t|1) ZFSBOOTMENU_FORCE_INIT=yes;;
+  *) unset ZFSBOOTMENU_FORCE_INIT;;
+esac
+
+# Run the initializer snippets
+for src in /libexec/init.d/*; do
+  [ -x "${src}" ] || [ -n "${ZFSBOOTMENU_FORCE_INIT}" ] || continue
+  zinfo "running init stage ${src}"
+  # shellcheck disable=SC1090
+  ZFSBOOTMENU_INITIALIZATION=yes source "${src}"
+  chmod 000 "${src}"
+done
+
+unset src ZFSBOOTMENU_INITIALIZATION
+
+: > "${BASE}/initialized"
+
+# Finish here unless ZFSBOOTMENU_CONSOLE is set
+case "${ZFSBOOTMENU_CONSOLE,,}" in
+  yes|y|true|t|1) ;;
+  *) exit 0
+esac
+
+unset ZFSBOOTMENU_CONSOLE
+
+# If BOOTFS is not empty display the fast boot menu
+# shellcheck disable=SC2154
+if [ "${menu_timeout:-0}" -ge 0 ] && [ -n "${BOOTFS}" ]; then
+  # Draw a countdown menu
+  # shellcheck disable=SC2154
+  if timed_prompt -d "${menu_timeout}" \
+    -p "Booting $( colorize cyan "${BOOTFS}" ) in $( colorize yellow "%0.${#menu_timeout}d" ) seconds" \
+    -r "boot now " \
+    -e "boot menu" ; then
+    # This lock file is present if someone has SSH'd to take control
+    # Do not attempt to automatically boot if present
+    if [ ! -e "${BASE}/active" ] ; then
+      # Clear screen before a possible password prompt
+      tput clear
+      if ! NO_CACHE=1 load_key "${BOOTFS}"; then
+        if [ "${auto_boot}" = "1" ]; then
+          zdebug "auto boot failed to load key for ${BOOTFS}"
+          exit 1
+        fi
+        emergency_shell "unable to load key for $( colorize cyan "${BOOTFS}" )"
+      elif find_be_kernels "${BOOTFS}" && [ ! -e "${BASE}/active" ]; then
+        # Automatically select a kernel and boot it
+        kexec_kernel "$( select_kernel "${BOOTFS}" )"
+      elif [ "${auto_boot}" = "1" ]; then
+        zdebug "auto boot failed to find kernels for ${BOOTFS}"
+        exit 1
+      fi
+    fi
+  fi
+fi
+
+# If the lock file is present, drop to a recovery shell to avoid
+# stealing control back from an SSH session
+if [ -e "${BASE}/active" ] ; then
+  if [ "${auto_boot}" = "1" ]; then
+    zdebug "auto boot aborting because an active instance is already running"
+    exit 1
+  fi
+  emergency_shell "an active instance is already running"
+fi
+
+if [ "${auto_boot}" = "1" ]; then
+  zdebug "auto boot completed without a kexec handoff"
+  exit 1
+fi
+
+# Otherwise, just continue to launch ZFSBootMenu forever
+while true; do
+  [ -x /bin/zfsbootmenu ] && /bin/zfsbootmenu
+  emergency_shell
+done

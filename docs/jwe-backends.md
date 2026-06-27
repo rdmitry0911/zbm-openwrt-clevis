@@ -109,6 +109,8 @@ Compatibility:
 
 - dataset-specific file names are tried first
 - legacy generic `Clevis.JWE*` file names are still accepted as fallback
+- manual reseal writes generic `Clevis.JWE*` files as a fallback for systems
+  where several encryption roots share the same file-backed ZFS key location
 
 Requirements:
 

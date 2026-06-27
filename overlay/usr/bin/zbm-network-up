@@ -1,0 +1,235 @@
+#!/bin/bash
+set -euo pipefail
+
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+[ -r /run/zbm-runtime/kcl.env ] && source /run/zbm-runtime/kcl.env
+
+discover_physical_ifname() {
+  local ifn
+
+  for ifn in /sys/class/net/*; do
+    ifn="${ifn##*/}"
+    case "${ifn}" in
+      lo|br-*|ifb*|sit*|tun*|tap*|veth*|docker*|virbr*)
+        continue
+        ;;
+    esac
+    [ -e "/sys/class/net/${ifn}/device" ] || continue
+    [ -r "/sys/class/net/${ifn}/carrier" ] && [ "$(cat "/sys/class/net/${ifn}/carrier" 2>/dev/null || true)" != "1" ] && continue
+    printf '%s\n' "${ifn}"
+    return 0
+  done
+
+  for ifn in /sys/class/net/*; do
+    ifn="${ifn##*/}"
+    case "${ifn}" in
+      lo|br-*|ifb*|sit*|tun*|tap*|veth*|docker*|virbr*)
+        continue
+        ;;
+    esac
+    [ -e "/sys/class/net/${ifn}/device" ] || continue
+    printf '%s\n' "${ifn}"
+    return 0
+  done
+
+  return 1
+}
+
+discover_ifname() {
+  [ -e /sys/class/net/br-lan ] && {
+    printf '%s\n' br-lan
+    return 0
+  }
+
+  discover_physical_ifname
+}
+
+log_network() {
+  local msg="$1"
+
+  printf '%s\n' "${msg}"
+  printf '<6>%s\n' "[zbm-network-up] ${msg}" >/dev/kmsg 2>/dev/null || true
+}
+
+iface_exists() {
+  [ -e "/sys/class/net/${1}" ]
+}
+
+bridge_members_up() {
+  local ifn member
+
+  ifn="$1"
+  [ -d "/sys/class/net/${ifn}/brif" ] || return 0
+  for member in /sys/class/net/"${ifn}"/brif/*; do
+    [ -e "${member}" ] || continue
+    ip link set "${member##*/}" up 2>/dev/null || true
+  done
+}
+
+iface_link_ready() {
+  local ifn="$1"
+  local member carrier state
+
+  if [ -d "/sys/class/net/${ifn}/brif" ]; then
+    for member in /sys/class/net/"${ifn}"/brif/*; do
+      [ -e "${member}" ] || continue
+      carrier="$(cat "/sys/class/net/${member##*/}/carrier" 2>/dev/null || true)"
+      [ "${carrier}" = "1" ] && return 0
+    done
+  fi
+
+  carrier="$(cat "/sys/class/net/${ifn}/carrier" 2>/dev/null || true)"
+  [ "${carrier}" = "1" ] && return 0
+
+  state="$(cat "/sys/class/net/${ifn}/operstate" 2>/dev/null || true)"
+  case "${state}" in
+    up|unknown) return 0 ;;
+  esac
+
+  return 1
+}
+
+configure_static() {
+  local ifn="$1"
+  local prefix
+
+  prefix="$(netmask_to_prefix "${ZBM_NET_NETMASK:-255.255.255.0}")"
+  kill_dhcp_client "${ifn}"
+  ip link set "${ifn}" up 2>/dev/null || true
+  bridge_members_up "${ifn}"
+  ip addr flush dev "${ifn}" 2>/dev/null || true
+  [ -n "${ZBM_NET_IPADDR:-}" ] && ip addr add "${ZBM_NET_IPADDR}/${prefix}" dev "${ifn}"
+  if [ -n "${ZBM_NET_GATEWAY:-}" ]; then
+    ip route del default 2>/dev/null || true
+    ip route add default via "${ZBM_NET_GATEWAY}" dev "${ifn}" 2>/dev/null || true
+  fi
+  write_resolv_conf
+}
+
+network_ready() {
+  local ifn="$1"
+
+  iface_exists "${ifn}" || return 1
+  ip -4 addr show dev "${ifn}" scope global 2>/dev/null | grep -q 'inet ' || return 1
+  ip route show default 2>/dev/null | grep -q '^default ' || return 1
+  iface_link_ready "${ifn}" || return 1
+
+  if [ -n "${ZBM_NET_GATEWAY:-}" ] && command -v ping >/dev/null 2>&1; then
+    ping -c 1 -W 1 "${ZBM_NET_GATEWAY}" >/dev/null 2>&1 || return 1
+  fi
+
+  return 0
+}
+
+wait_network_ready() {
+  local ifn="$1"
+  local tries="${2:-20}"
+
+  while [ "${tries}" -gt 0 ]; do
+    network_ready "${ifn}" && return 0
+    sleep 1
+    tries=$((tries - 1))
+  done
+
+  return 1
+}
+
+kill_dhcp_client() {
+  local pidfile pid
+
+  pidfile="/var/run/udhcpc-${1}.pid"
+  if [ -r "${pidfile}" ]; then
+    pid="$(cat "${pidfile}" 2>/dev/null || true)"
+    [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true
+    rm -f "${pidfile}"
+  fi
+}
+
+write_resolv_conf() {
+  local dns oldifs
+
+  [ -n "${ZBM_NET_DNS:-}" ] || return 0
+  : > /etc/resolv.conf
+  oldifs="${IFS}"
+  IFS=', '
+  for dns in ${ZBM_NET_DNS}; do
+    [ -n "${dns}" ] && printf 'nameserver %s\n' "${dns}" >> /etc/resolv.conf
+  done
+  IFS="${oldifs}"
+}
+
+netmask_to_prefix() {
+  case "${1}" in
+    255.255.255.255) echo 32 ;;
+    255.255.255.254) echo 31 ;;
+    255.255.255.252) echo 30 ;;
+    255.255.255.248) echo 29 ;;
+    255.255.255.240) echo 28 ;;
+    255.255.255.224) echo 27 ;;
+    255.255.255.192) echo 26 ;;
+    255.255.255.128) echo 25 ;;
+    255.255.255.0) echo 24 ;;
+    255.255.254.0) echo 23 ;;
+    255.255.252.0) echo 22 ;;
+    255.255.248.0) echo 21 ;;
+    255.255.240.0) echo 20 ;;
+    255.255.224.0) echo 19 ;;
+    255.255.192.0) echo 18 ;;
+    255.255.128.0) echo 17 ;;
+    255.255.0.0) echo 16 ;;
+    255.254.0.0) echo 15 ;;
+    255.252.0.0) echo 14 ;;
+    255.248.0.0) echo 13 ;;
+    255.240.0.0) echo 12 ;;
+    255.224.0.0) echo 11 ;;
+    255.192.0.0) echo 10 ;;
+    255.128.0.0) echo 9 ;;
+    255.0.0.0) echo 8 ;;
+    0.0.0.0|'') echo 0 ;;
+    *) echo "${1}" ;;
+  esac
+}
+
+target_if="${ZBM_NET_IFNAME:-}"
+[ -n "${target_if}" ] || target_if="$(discover_ifname || true)"
+[ -n "${target_if}" ] || exit 0
+
+if ! iface_exists "${target_if}"; then
+  fallback_if="$(discover_ifname || true)"
+  if [ -n "${fallback_if}" ]; then
+    log_network "configured interface ${target_if} is absent, using ${fallback_if}"
+    target_if="${fallback_if}"
+  fi
+fi
+
+if [ -n "${ZBM_WIFI_SSID:-}" ] && command -v wifi >/dev/null 2>&1; then
+  wifi up >/dev/null 2>&1 || true
+fi
+
+ip link set "${target_if}" up 2>/dev/null || true
+bridge_members_up "${target_if}"
+
+if [ "${ZBM_NET_PROTO:-dhcp}" = "static" ]; then
+  configure_static "${target_if}"
+else
+  udhcpc -q -b -i "${target_if}" -p "/var/run/udhcpc-${target_if}.pid" -s /lib/netifd/dhcp.script >/dev/null 2>&1 || true
+fi
+
+if wait_network_ready "${target_if}" 20; then
+  log_network "network ready on ${target_if}"
+  exit 0
+fi
+
+fallback_if="$(discover_physical_ifname || true)"
+if [ "${ZBM_NET_PROTO:-dhcp}" = "static" ] && [ -n "${fallback_if}" ] && [ "${fallback_if}" != "${target_if}" ]; then
+  log_network "network not ready on ${target_if}, trying ${fallback_if}"
+  ip addr flush dev "${target_if}" 2>/dev/null || true
+  configure_static "${fallback_if}"
+  if wait_network_ready "${fallback_if}" 10; then
+    log_network "network ready on ${fallback_if}"
+    exit 0
+  fi
+fi
+
+log_network "network did not become ready"
+exit 1

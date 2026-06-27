@@ -1,0 +1,52 @@
+#!/bin/sh
+set -eu
+
+KVER="$(uname -r)"
+MODDIR="/lib/modules/${KVER}"
+
+module_loaded() {
+  grep -q "^${1} " /proc/modules 2>/dev/null
+}
+
+load_module() {
+  local mod="$1"
+  local ko
+
+  module_loaded "${mod}" && return 0
+
+  if command -v modprobe >/dev/null 2>&1 && modprobe "${mod}" 2>/dev/null; then
+    return 0
+  fi
+
+  ko="$(find "${MODDIR}" -type f -name "${mod}.ko" 2>/dev/null | head -n 1)"
+  if [ -n "${ko}" ]; then
+    insmod "${ko}"
+    return 0
+  fi
+
+  return 1
+}
+
+if grep -q '^zfs ' /proc/modules 2>/dev/null; then
+  [ -e /dev/zfs ] || mknod /dev/zfs c 10 249
+  exit 0
+fi
+
+for mod in zlib_inflate zlib_deflate; do
+  load_module "${mod}" || true
+done
+
+for mod in spl zfs; do
+  if ! load_module "${mod}"; then
+    echo "failed to load ${mod} from ${MODDIR}" >&2
+    exit 1
+  fi
+done
+
+if grep -q '^zfs ' /proc/modules 2>/dev/null; then
+  [ -e /dev/zfs ] || mknod /dev/zfs c 10 249
+  exit 0
+fi
+
+echo "failed to load OpenZFS kernel modules from ${MODDIR}" >&2
+exit 1

@@ -1,0 +1,51 @@
+#!/bin/bash
+set -eu
+
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+export TERM="${TERM:-linux}"
+[ "${TERM}" = "dumb" ] && export TERM=linux
+
+printf '<6>%s\n' '[zbm-autoboot] begin' >/dev/kmsg 2>/dev/null || true
+echo "[zbm-autoboot] begin"
+mkdir -p /run
+mkdir -p /run/zbm-progress
+: > /run/zbm-progress/zbm-autoboot.begin
+rm -f /run/zbm-autoboot.done
+touch /run/zbm-autoboot.pending
+cleanup() {
+  : > /run/zbm-progress/zbm-autoboot.cleanup
+  printf '<6>%s\n' '[zbm-autoboot] cleanup' >/dev/kmsg 2>/dev/null || true
+  echo "[zbm-autoboot] cleanup"
+  rm -f "${BASE:-/zfsbootmenu}/active" 2>/dev/null || true
+  /usr/bin/zbm-end >/dev/null 2>&1 || true
+  rm -f /run/zbm-autoboot.pending
+  touch /run/zbm-autoboot.done
+}
+trap cleanup EXIT INT TERM
+
+if [ -x /usr/bin/zbm-kcl-apply ]; then
+  : > /run/zbm-progress/zbm-autoboot.apply-kcl
+  printf '<6>%s\n' '[zbm-autoboot] applying kcl' >/dev/kmsg 2>/dev/null || true
+  echo "[zbm-autoboot] applying kcl"
+  /usr/bin/zbm-kcl-apply >/tmp/zbm-kcl-apply.log 2>&1 || true
+fi
+
+[ -r /run/zbm-runtime/kcl.env ] && source /run/zbm-runtime/kcl.env
+
+if [ -x /usr/bin/zbm-network-up ]; then
+  : > /run/zbm-progress/zbm-autoboot.apply-network
+  printf '<6>%s\n' '[zbm-autoboot] applying runtime network' >/dev/kmsg 2>/dev/null || true
+  echo "[zbm-autoboot] applying runtime network"
+  /usr/bin/zbm-network-up >/tmp/zbm-network-up.log 2>&1 || true
+fi
+
+export ZBM_AUTO_BOOT=1
+export ZBM_MODE=auto
+export ZBM_MENU_TIMEOUT="${ZBM_MENU_TIMEOUT:-0}"
+: > /run/zbm-progress/zbm-autoboot.enter-zbm-start
+printf '<6>%s\n' '[zbm-autoboot] entering zbm-start' >/dev/kmsg 2>/dev/null || true
+echo "[zbm-autoboot] entering zbm-start"
+/usr/bin/zbm-start || true
+: > /run/zbm-progress/zbm-autoboot.returned
+printf '<6>%s\n' '[zbm-autoboot] zbm-start returned' >/dev/kmsg 2>/dev/null || true
+echo "[zbm-autoboot] zbm-start returned"

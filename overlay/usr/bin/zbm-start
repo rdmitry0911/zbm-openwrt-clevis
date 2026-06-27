@@ -1,0 +1,52 @@
+#!/bin/bash
+set -eu
+
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+mode="${ZBM_MODE:-manual}"
+[ "${ZBM_AUTO_BOOT:-0}" = "1" ] && mode=auto
+
+mkdir -p /run/zbm-progress
+: > /run/zbm-progress/zbm-start.begin
+printf '<6>%s\n' '[zbm-start] begin' >/dev/kmsg 2>/dev/null || true
+echo "[zbm-start] begin"
+
+if [ "${mode}" != "auto" ] && [ ! -e /run/zbm-autoboot.done ]; then
+  echo "Automatic ZBM start has not finished yet. Please try again later." >&2
+  exit 1
+fi
+
+/usr/bin/zbm-lock-acquire "${mode}"
+trap '/usr/bin/zbm-lock-release >/dev/null 2>&1 || true; /usr/bin/zbm-end >/dev/null 2>&1 || true' EXIT INT TERM
+/usr/bin/zbm-end >/dev/null 2>&1 || true
+
+if [ -x /usr/bin/zbm-load-zfs-kmod ]; then
+  : > /run/zbm-progress/zbm-start.kmods
+  printf '<6>%s\n' '[zbm-start] loading zfs kmods' >/dev/kmsg 2>/dev/null || true
+  echo "[zbm-start] loading zfs kmods"
+  /usr/bin/zbm-load-zfs-kmod || true
+fi
+
+if [ -x /usr/bin/zbm-ensure-tpm-devnodes ]; then
+  : > /run/zbm-progress/zbm-start.tpm
+  /usr/bin/zbm-ensure-tpm-devnodes || true
+fi
+
+mkdir -p /run /zfsbootmenu
+
+export ZFSBOOTMENU_CONSOLE=yes
+if [ -r /run/zbm-runtime/kcl.env ]; then
+  # shellcheck disable=SC1091
+  source /run/zbm-runtime/kcl.env
+fi
+if [ -n "${ZBM_AUTO_BOOTFS:-}" ]; then
+  export zbm_prefer_bootfs="${ZBM_AUTO_BOOTFS}"
+  export zbm_prefer_pool="${ZBM_AUTO_BOOTFS%%/*}"
+fi
+
+: > /run/zbm-progress/zbm-start.enter-init
+printf '<6>%s\n' '[zbm-start] entering zfsbootmenu-init' >/dev/kmsg 2>/dev/null || true
+echo "[zbm-start] entering /libexec/zfsbootmenu-init"
+/libexec/zfsbootmenu-init
+: > /run/zbm-progress/zbm-start.returned
+printf '<6>%s\n' '[zbm-start] zfsbootmenu-init returned' >/dev/kmsg 2>/dev/null || true
+echo "[zbm-start] zfsbootmenu-init returned"

@@ -1,0 +1,20 @@
+#!/bin/bash
+set -eu
+
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+
+if [ -x /usr/bin/zbm-load-zfs-kmod ]; then
+  /usr/bin/zbm-load-zfs-kmod || true
+fi
+
+mkdir -p /run /zfsbootmenu
+
+if [ -r /run/zfsbootmenu-init.pid ]; then
+  oldpid="$(cat /run/zfsbootmenu-init.pid 2>/dev/null || true)"
+  [ -n "${oldpid}" ] && kill "${oldpid}" 2>/dev/null || true
+  rm -f /run/zfsbootmenu-init.pid
+fi
+
+rm -f /zfsbootmenu/initialized /zfsbootmenu/active /zfsbootmenu/bootenvs
+/libexec/zfsbootmenu-init >/tmp/zfsbootmenu-init.log 2>&1 &
+echo "$!" > /run/zfsbootmenu-init.pid

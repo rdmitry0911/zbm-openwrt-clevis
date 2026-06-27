@@ -1,0 +1,499 @@
+#!/bin/bash
+set -euo pipefail
+
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+BASE=/run/zbm-runtime
+mkdir -p "${BASE}"
+
+# shellcheck disable=SC1091
+set +u
+source /lib/zfsbootmenu-kcl.sh
+set -u
+
+kget() {
+  get_zbm_arg "$@" 2>/dev/null
+}
+
+discover_physical_ifname() {
+  local ifn
+
+  for ifn in /sys/class/net/*; do
+    ifn="${ifn##*/}"
+    case "${ifn}" in
+      lo|br-*|ifb*|sit*|tun*|tap*|veth*|docker*|virbr*)
+        continue
+        ;;
+    esac
+    [ -e "/sys/class/net/${ifn}/device" ] || continue
+    [ -r "/sys/class/net/${ifn}/carrier" ] && [ "$(cat "/sys/class/net/${ifn}/carrier" 2>/dev/null || true)" != "1" ] && continue
+    printf '%s\n' "${ifn}"
+    return 0
+  done
+
+  for ifn in /sys/class/net/*; do
+    ifn="${ifn##*/}"
+    case "${ifn}" in
+      lo|br-*|ifb*|sit*|tun*|tap*|veth*|docker*|virbr*)
+        continue
+        ;;
+    esac
+    [ -e "/sys/class/net/${ifn}/device" ] || continue
+    printf '%s\n' "${ifn}"
+    return 0
+  done
+
+  return 1
+}
+
+discover_ifname() {
+  [ -e /sys/class/net/br-lan ] && {
+    printf '%s\n' br-lan
+    return 0
+  }
+
+  discover_physical_ifname
+}
+
+append_unique_line() {
+  local line file
+  line="${1}"
+  file="${2}"
+
+  [ -n "${line}" ] || return 0
+  mkdir -p "$(dirname "${file}")"
+  touch "${file}"
+  grep -Fqx "${line}" "${file}" 2>/dev/null || printf '%s\n' "${line}" >> "${file}"
+}
+
+strip_wrapping_quotes() {
+  local value
+  value="${1}"
+
+  case "${value}" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+  esac
+
+  printf '%s' "${value}"
+}
+
+normalize_console_rotate() {
+  local value
+  value="${1,,}"
+
+  case "${value}" in
+    ""|none|normal|0)
+      printf '%s' 0
+      ;;
+    right|cw|clockwise|90|1)
+      printf '%s' 1
+      ;;
+    inverted|upside-down|upsidedown|180|2)
+      printf '%s' 2
+      ;;
+    left|ccw|counterclockwise|270|3)
+      printf '%s' 3
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+apply_console_rotate() {
+  local rotation target
+
+  rotation="${1}"
+  [ -n "${rotation}" ] || return 0
+
+  rotation="$(normalize_console_rotate "${rotation}" || true)"
+  [ -n "${rotation}" ] || return 0
+
+  for target in /sys/class/graphics/fbcon/rotate_all /sys/class/graphics/fbcon/rotate; do
+    [ -w "${target}" ] || continue
+    printf '%s\n' "${rotation}" > "${target}" 2>/dev/null || true
+  done
+
+  printf '<6>%s\n' "[zbm-kcl-apply] console rotation=${rotation}" >/dev/kmsg 2>/dev/null || true
+}
+
+read_efivar_payload() {
+  local name="$1"
+  local guid var path
+
+  if [ "${#name}" -gt 37 ] && [ "${name:36:1}" = "-" ]; then
+    guid="${name:0:36}"
+    var="${name:37}"
+    path="/sys/firmware/efi/efivars/${var}-${guid}"
+    if [ -r "${path}" ]; then
+      dd if="${path}" bs=1 skip=4 2>/dev/null | tr -d '\000\r\n'
+      return 0
+    fi
+  fi
+
+  path="/sys/firmware/efi/efivars/${name}"
+  if [ -r "${path}" ]; then
+    dd if="${path}" bs=1 skip=4 2>/dev/null | tr -d '\000\r\n'
+    return 0
+  fi
+
+  return 1
+}
+
+loader_device_partuuid() {
+  local path uuid
+
+  for path in /sys/firmware/efi/efivars/LoaderDevicePartUUID-*; do
+    [ -r "${path}" ] || continue
+    uuid="$(read_efivar_payload "${path##*/}" | tr 'A-F' 'a-f')"
+    [ -n "${uuid}" ] || continue
+    printf '%s' "${uuid}"
+    return 0
+  done
+
+  return 1
+}
+
+loader_image_identifier() {
+  local path image
+
+  for path in /sys/firmware/efi/efivars/LoaderImageIdentifier-*; do
+    [ -r "${path}" ] || continue
+    image="$(read_efivar_payload "${path##*/}")"
+    [ -n "${image}" ] || continue
+    image="${image//\\//}"
+    printf '%s' "${image}"
+    return 0
+  done
+
+  return 1
+}
+
+loader_image_dir() {
+  local image
+
+  image="$(loader_image_identifier || true)"
+  case "${image}" in
+    /*/*)
+      printf '%s' "${image%/*}"
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+partition_path_from_partuuid() {
+  local want sysdisk disk nr uuid rest base
+
+  want="$(printf '%s' "$1" | tr 'A-F' 'a-f')"
+  [ -n "${want}" ] || return 1
+  command -v partx >/dev/null 2>&1 || return 1
+
+  for sysdisk in /sys/class/block/*; do
+    [ -r "${sysdisk}/uevent" ] || continue
+    grep -q '^DEVTYPE=disk$' "${sysdisk}/uevent" || continue
+    disk="/dev/${sysdisk##*/}"
+    [ -b "${disk}" ] || continue
+
+    while read -r nr uuid rest; do
+      case "${nr}" in
+        ""|NR) continue ;;
+      esac
+      uuid="$(printf '%s' "${uuid}" | tr 'A-F' 'a-f')"
+      [ "${uuid}" = "${want}" ] || continue
+
+      base="${disk##*/}"
+      case "${base}" in
+        *[0-9]) printf '%sp%s' "${disk}" "${nr}" ;;
+        *) printf '%s%s' "${disk}" "${nr}" ;;
+      esac
+      return 0
+    done < <(partx -o NR,UUID "${disk}" 2>/dev/null)
+  done
+
+  return 1
+}
+
+cmdline_boot_image_dir() {
+  local arg image dir
+
+  while read -r arg; do
+    case "${arg}" in
+      BOOT_IMAGE=*) image="${arg#BOOT_IMAGE=}" ;;
+      *) continue ;;
+    esac
+
+    image="${image//\\//}"
+    case "${image}" in
+      /*/*)
+        dir="${image%/*}"
+        printf '%s' "${dir}"
+        return 0
+        ;;
+    esac
+  done < <(tr ' ' '\n' < /proc/cmdline)
+
+  return 1
+}
+
+find_refind_linux_dir_on_device() {
+  local dev mnt conf rel dir found
+
+  dev="$1"
+  [ -b "${dev}" ] || return 1
+  mnt="$(mktemp -d)"
+
+  if ! mount -o ro -t vfat "${dev}" "${mnt}" >/dev/null 2>&1; then
+    rmdir "${mnt}" 2>/dev/null || true
+    return 1
+  fi
+
+  while IFS= read -r conf; do
+    [ -r "${conf}" ] || continue
+    grep -q 'clevis.store=vfat' "${conf}" || continue
+    rel="${conf#"${mnt}"}"
+    dir="${rel%/*}"
+    [ -n "${dir}" ] || continue
+    found="${dir}"
+    break
+  done < <(find "${mnt}" -maxdepth 5 -type f -iname refind_linux.conf 2>/dev/null)
+
+  umount "${mnt}" >/dev/null 2>&1 || true
+  rmdir "${mnt}" 2>/dev/null || true
+  if [ -n "${found:-}" ]; then
+    printf '%s' "${found}"
+    return 0
+  fi
+
+  return 1
+}
+
+first_vfat_device_with_refind_linux() {
+  local syspart dev mnt conf
+
+  for syspart in /sys/class/block/*; do
+    [ -r "${syspart}/uevent" ] || continue
+    grep -q '^DEVTYPE=partition$' "${syspart}/uevent" || continue
+    dev="/dev/${syspart##*/}"
+    [ -b "${dev}" ] || continue
+
+    mnt="$(mktemp -d)"
+    if mount -o ro -t vfat "${dev}" "${mnt}" >/dev/null 2>&1; then
+      conf="$(find "${mnt}" -maxdepth 5 -type f -iname refind_linux.conf 2>/dev/null | head -n 1)"
+      umount "${mnt}" >/dev/null 2>&1 || true
+      rmdir "${mnt}" 2>/dev/null || true
+      if [ -n "${conf}" ]; then
+        printf '%s' "${dev}"
+        return 0
+      fi
+    else
+      rmdir "${mnt}" 2>/dev/null || true
+    fi
+  done
+
+  return 1
+}
+
+default_vfat_clevis_file_location() {
+  local partuuid dev image_dir
+
+  partuuid="$(loader_device_partuuid || true)"
+  if [ -n "${partuuid}" ]; then
+    dev="$(partition_path_from_partuuid "${partuuid}" || true)"
+  fi
+  [ -n "${dev:-}" ] || dev="$(first_vfat_device_with_refind_linux || true)"
+  [ -n "${dev:-}" ] || return 1
+
+  image_dir="$(loader_image_dir || true)"
+  [ -n "${image_dir}" ] || image_dir="$(cmdline_boot_image_dir || true)"
+  [ -n "${image_dir}" ] || image_dir="$(find_refind_linux_dir_on_device "${dev}" || true)"
+  [ -n "${image_dir}" ] || return 1
+
+  printf '%s:%s/jwe' "${dev}" "${image_dir%/}"
+}
+
+set_root_hash() {
+  local hash tmp
+  hash="${1}"
+  [ -n "${hash}" ] || return 0
+
+  tmp="$(mktemp)"
+  awk -F: -v OFS=: -v hash="${hash}" '
+    $1 == "root" { $2 = hash }
+    { print }
+  ' /etc/shadow > "${tmp}"
+  cat "${tmp}" > /etc/shadow
+  rm -f "${tmp}"
+}
+
+write_env_file() {
+  local file
+  file="${1}"
+  shift
+  : > "${file}"
+  chmod 0600 "${file}"
+  printf '# generated from kernel command line\n' >> "${file}"
+  while [ "$#" -gt 1 ]; do
+    printf '%s=%q\n' "$1" "$2" >> "${file}"
+    shift 2
+  done
+}
+
+append_dns_config() {
+  local dns oldifs
+
+  [ -n "${net_dns}" ] || return 0
+  [ "${net_proto}" = "dhcp" ] && printf "\toption peerdns '0'\n" >> /etc/config/network
+
+  oldifs="${IFS}"
+  IFS=', '
+  for dns in ${net_dns}; do
+    [ -n "${dns}" ] && printf "\tlist dns '%s'\n" "${dns}" >> /etc/config/network
+  done
+  IFS="${oldifs}"
+}
+
+net_proto="$(kget owrt.net_proto || true)"
+net_ifname="$(kget owrt.net_ifname || true)"
+net_ipaddr="$(kget owrt.net_ipaddr || true)"
+net_netmask="$(kget owrt.net_netmask || true)"
+net_gateway="$(kget owrt.net_gateway || true)"
+net_dns="$(kget owrt.net_dns || true)"
+wifi_ssid="$(kget owrt.wifi_ssid || true)"
+wifi_psk="$(kget owrt.wifi_psk || true)"
+wifi_device="$(kget owrt.wifi_device || true)"
+wifi_ifname="$(kget owrt.wifi_ifname || true)"
+wifi_encryption="$(kget owrt.wifi_encryption || true)"
+ssh_pubkey="$(kget owrt.ssh_pubkey || true)"
+root_hash="$(kget owrt.root_password_hash || true)"
+tty_login="$(kget owrt.ttylogin || true)"
+console_rotate="$(kget owrt.console_rotate owrt.fbcon_rotate || true)"
+target_kcl_append="$(kget owrt.target_kcl_append || true)"
+target_kcl_override="$(kget owrt.target_kcl_override || true)"
+target_console_rotate="$(kget owrt.target_console_rotate owrt.target_fbcon_rotate || true)"
+target_fbcon_map="$(kget owrt.target_fbcon_map || true)"
+clevis_decrypt="$(kget clevis.decrypt owrt.clevis_decrypt || true)"
+clevis_store="$(kget clevis.store owrt.clevis_store || true)"
+clevis_file_location="$(kget clevis.file_location owrt.clevis_file_location || true)"
+clevis_pcr_ids="$(kget clevis.pcr_ids owrt.clevis_pcr_ids || true)"
+clevis_reseal_key_fwcfg="$(kget clevis.reseal_key_fwcfg owrt.clevis_reseal_key_fwcfg || true)"
+clevis_reseal_key_blockdev="$(kget clevis.reseal_key_blockdev owrt.clevis_reseal_key_blockdev || true)"
+clevis_chat_id="$(kget clevis.CHAT_ID || true)"
+clevis_api_token="$(kget clevis.API_TOKEN || true)"
+auto_bootfs="$(kget owrt.auto_bootfs || true)"
+host_name="$(kget owrt.host clevis.host || true)"
+
+[ -n "${net_proto}" ] || net_proto=dhcp
+[ -n "${net_ifname}" ] || net_ifname="$(discover_ifname || true)"
+[ -n "${net_ifname}" ] || net_ifname=eth0
+[ -n "${wifi_device}" ] || wifi_device=radio0
+[ -n "${wifi_ifname}" ] || wifi_ifname=wlan0
+[ -n "${wifi_encryption}" ] || wifi_encryption=psk2
+[ -n "${clevis_decrypt}" ] || clevis_decrypt=yes
+[ -n "${clevis_pcr_ids}" ] || clevis_pcr_ids=1,4,5,7,9
+[ -n "${host_name}" ] || host_name=openwrt-zbm
+[ -n "${tty_login}" ] || tty_login=1
+if [ "${clevis_store}" = "vfat" ] && [ -z "${clevis_file_location}" ]; then
+  clevis_file_location="$(default_vfat_clevis_file_location || true)"
+  if [ -n "${clevis_file_location}" ]; then
+    printf '<6>%s\n' "[zbm-kcl-apply] default clevis.file_location=${clevis_file_location}" >/dev/kmsg 2>/dev/null || true
+  else
+    printf '<4>%s\n' "[zbm-kcl-apply] clevis.store=vfat but default clevis.file_location could not be determined" >/dev/kmsg 2>/dev/null || true
+  fi
+fi
+
+ssh_pubkey="$(strip_wrapping_quotes "${ssh_pubkey}")"
+target_kcl_append="$(strip_wrapping_quotes "${target_kcl_append}")"
+target_kcl_override="$(strip_wrapping_quotes "${target_kcl_override}")"
+if [ -n "${target_console_rotate}" ]; then
+  target_console_rotate="$(normalize_console_rotate "${target_console_rotate}" || true)"
+fi
+
+apply_console_rotate "${console_rotate}"
+set_root_hash "${root_hash}"
+append_unique_line "${ssh_pubkey}" /etc/dropbear/authorized_keys
+append_unique_line "${ssh_pubkey}" /root/.ssh/authorized_keys
+
+cat > /etc/config/system <<CFG
+config system
+	option hostname '${host_name}'
+	option timezone 'GMT0'
+	option zonename 'UTC'
+	option ttylogin '${tty_login}'
+	option log_size '128'
+	option urandom_seed '0'
+
+config timeserver 'ntp'
+	option enabled '1'
+	option enable_server '0'
+	list server '0.openwrt.pool.ntp.org'
+	list server '1.openwrt.pool.ntp.org'
+	list server '2.openwrt.pool.ntp.org'
+	list server '3.openwrt.pool.ntp.org'
+CFG
+
+cat > /etc/config/network <<CFG
+config interface 'loopback'
+	option device 'lo'
+	option proto 'static'
+	option ipaddr '127.0.0.1'
+	option netmask '255.0.0.0'
+
+config interface 'lan'
+	option device '${net_ifname}'
+	option proto '${net_proto}'
+CFG
+
+if [ "${net_proto}" = "static" ]; then
+  [ -n "${net_ipaddr}" ] && printf "\toption ipaddr '%s'\n" "${net_ipaddr}" >> /etc/config/network
+  [ -n "${net_netmask}" ] && printf "\toption netmask '%s'\n" "${net_netmask}" >> /etc/config/network
+  [ -n "${net_gateway}" ] && printf "\toption gateway '%s'\n" "${net_gateway}" >> /etc/config/network
+fi
+append_dns_config
+
+cat > /etc/config/wireless <<CFG
+config wifi-device '${wifi_device}'
+	option type 'mac80211'
+	option disabled '$([ -n "${wifi_ssid}" ] && printf 0 || printf 1)'
+
+config wifi-iface 'default_${wifi_device}'
+	option device '${wifi_device}'
+	option mode 'sta'
+	option network 'lan'
+	option ssid '${wifi_ssid}'
+	option encryption '${wifi_encryption}'
+	option key '${wifi_psk}'
+	option disabled '$([ -n "${wifi_ssid}" ] && printf 0 || printf 1)'
+CFG
+
+write_env_file /run/zbm-runtime/kcl.env \
+  ZBM_NET_PROTO "${net_proto}" \
+  ZBM_NET_IFNAME "${net_ifname}" \
+  ZBM_NET_IPADDR "${net_ipaddr}" \
+  ZBM_NET_NETMASK "${net_netmask}" \
+  ZBM_NET_GATEWAY "${net_gateway}" \
+  ZBM_NET_DNS "${net_dns}" \
+  ZBM_WIFI_SSID "${wifi_ssid}" \
+  ZBM_WIFI_PSK "${wifi_psk}" \
+  ZBM_WIFI_DEVICE "${wifi_device}" \
+  ZBM_WIFI_IFNAME "${wifi_ifname}" \
+  ZBM_WIFI_ENCRYPTION "${wifi_encryption}" \
+  ZBM_SSH_PUBKEY "${ssh_pubkey}" \
+  ZBM_ROOT_PASSWORD_HASH "${root_hash}" \
+  ZBM_CONSOLE_ROTATE "${console_rotate}" \
+  ZBM_TARGET_KCL_APPEND "${target_kcl_append}" \
+  ZBM_TARGET_KCL_OVERRIDE "${target_kcl_override}" \
+  ZBM_TARGET_CONSOLE_ROTATE "${target_console_rotate}" \
+  ZBM_TARGET_FBCON_MAP "${target_fbcon_map}" \
+  ZBM_CLEVIS_DECRYPT "${clevis_decrypt}" \
+  ZBM_CLEVIS_STORE "${clevis_store}" \
+  ZBM_CLEVIS_FILE_LOCATION "${clevis_file_location}" \
+  ZBM_CLEVIS_PCR_IDS "${clevis_pcr_ids}" \
+  ZBM_CLEVIS_RESEAL_KEY_FWCFG "${clevis_reseal_key_fwcfg}" \
+  ZBM_CLEVIS_RESEAL_KEY_BLOCKDEV "${clevis_reseal_key_blockdev}" \
+  ZBM_CLEVIS_CHAT_ID "${clevis_chat_id}" \
+  ZBM_CLEVIS_API_TOKEN "${clevis_api_token}" \
+  ZBM_AUTO_BOOTFS "${auto_bootfs}" \
+  ZBM_HOST "${host_name}"
+
+cp /run/zbm-runtime/kcl.env /etc/zfsbootmenu-kcl.env

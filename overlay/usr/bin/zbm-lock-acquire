@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+
+mode="${1:-manual}"
+lockdir=/run/zbm.lock
+pidfile="${lockdir}/pid"
+modefile="${lockdir}/mode"
+
+mkdir -p /run
+
+if mkdir "${lockdir}" 2>/dev/null; then
+  printf '%s\n' "$$" > "${pidfile}"
+  printf '%s\n' "${mode}" > "${modefile}"
+  exit 0
+fi
+
+if [ -r "${pidfile}" ]; then
+  pid="$(cat "${pidfile}" 2>/dev/null || true)"
+  if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+    if [ "${mode}" = "manual" ]; then
+      echo "ZBM is already running; automatic start has not finished yet. Please try again later." >&2
+    else
+      echo "another ZBM instance is already active" >&2
+    fi
+    exit 1
+  fi
+fi
+
+rm -rf "${lockdir}"
+mkdir "${lockdir}"
+printf '%s\n' "$$" > "${pidfile}"
+printf '%s\n' "${mode}" > "${modefile}"

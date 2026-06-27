@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+
+/etc/init.d/rcS S boot
+/usr/bin/zbm-auto-boot >/tmp/zbm-auto-boot.log 2>&1 || true

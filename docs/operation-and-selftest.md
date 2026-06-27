@@ -25,6 +25,12 @@ The automatic lifecycle is the same path without human interaction:
 
 If automatic unlock works, the donor runtime proceeds directly to `kexec` and the target OS boots.
 
+Before entering `zbm-start`, `zbm-auto-boot` reapplies the runtime network
+configuration and waits for an IPv4 address, a default route, link readiness,
+and gateway reachability when a gateway is configured. This keeps SSH recovery
+available when automatic unlock fails. If the LAN bridge does not become ready,
+the runtime can fall back to a physical interface.
+
 ## Common QEMU preparation
 
 All examples below assume:
@@ -200,3 +206,86 @@ then the automatic instance is still running. Wait until it exits and try again.
 In the validated image, `Ctrl-C` in the donor `ZBM` TUI exits back to the
 protected OpenWrt system. It no longer drops into a recovery shell, and the
 old direct chroot shortcuts are disabled.
+
+## Test: multi-GPU console handoff lab
+
+This repository also has a local QEMU harness for the console handoff problem:
+two virtio GPU adapters, three scanouts, and a target Ubuntu root on encrypted
+ZFS. The target kernel and `initramfs` are inside the encrypted ZFS root, and
+the target-side key is embedded in the target `initramfs`.
+
+Create the target disk once:
+
+```bash
+./lab/create-ubuntu-zfs-target.sh
+```
+
+Build an overlay UKI from the current installed OpenWrt UKI:
+
+```bash
+./lab/build-overlay-uki.sh
+```
+
+Boot the lab:
+
+```bash
+./lab/run-qemu-multigpu-zfs.sh
+```
+
+For an unattended first-boot reseal in the QEMU lab, pass the test key through
+a read-only virtio block device instead of typing it on the serial console:
+
+```bash
+RESEAL_KEY_FILE=lab/qemu-zfs-target/zbmtest.key ./lab/run-qemu-multigpu-zfs.sh
+```
+
+The harness adds only `clevis.reseal_key_blockdev=/dev/vdc` to the `rEFInd`
+options. The passphrase is read from the extra read-only virtio disk inside
+the guest and is not placed on the kernel command line.
+
+For a follow-up boot that should not expose the reseal key, keep the same
+third virtio disk slot populated with a blank image and do not set
+`RESEAL_KEY_FILE`:
+
+```bash
+truncate -s 512 dist/blank-reseal-key.img
+RESEAL_KEY_DRIVE_FILE=dist/blank-reseal-key.img RESEAL_KEY_APPEND_KCL=1 ./lab/run-qemu-multigpu-zfs.sh
+```
+
+Keeping the placeholder drive and the same non-secret block-device pointer
+preserves the TPM PCR profile created during the reseal boot, while omitting
+`RESEAL_KEY_FILE` keeps the real passphrase out of the guest.
+
+The default lab `rEFInd` options include:
+
+```text
+owrt.console_rotate=right
+owrt.target_console_rotate=right
+owrt.target_fbcon_map=0
+owrt.target_kcl_append=""console=tty0 console=ttyS0,115200n8 loglevel=7 ignore_loglevel video=Virtual-1:1280x800@60 video=Virtual-2:1280x800@60 video=Virtual-3:768x1024@60""
+```
+
+On the first boot after a UKI or `rEFInd` option change, automatic unlock is
+expected to fail because PCR state changed. Press `Enter` on the serial
+console, run:
+
+```bash
+zbm-start
+```
+
+Then answer `yes` and enter the test ZFS passphrase:
+
+```text
+zfsbootmenu
+```
+
+Press `Enter` in the donor `ZBM` selector. The expected target kernel command
+line includes:
+
+```text
+fbcon=rotate:1 fbcon=map:0 video=Virtual-1:1280x800@60 video=Virtual-2:1280x800@60 video=Virtual-3:768x1024@60
+```
+
+Preserve `dist/swtpm-multigpu-zfs` and boot again with the placeholder drive.
+The second boot should automatically decrypt, `kexec` into Ubuntu, and reach
+the Ubuntu login prompt without manual input.

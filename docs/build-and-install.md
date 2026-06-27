@@ -20,7 +20,38 @@ The runtime also expects the local OpenWrt tree to contain:
 
 The helper scripts stored in this repository under `lab/` are reference copies. They assume the surrounding OpenWrt build tree exists, or that equivalent paths are supplied through environment variables.
 
-## Build flow
+## ImageBuilder build flow
+
+The current release image is built with the OpenWrt ImageBuilder helper:
+
+```bash
+./lab/build-openwrt-imagebuilder-uki.sh
+```
+
+Default output:
+
+- `dist/vmlinuz-openwrt-25.12.4-x86-64-generic-zbm-clevis-imagebuilder.efi`
+
+The `vmlinuz-` prefix is intentional. It lets `rEFInd` apply the matching
+`refind_linux.conf` stanza when the image is used through rEFInd's Linux
+loader path.
+
+Do not leave backup files whose names also start with `vmlinuz-` in the same
+directory. `rEFInd` can treat them as bootable Linux images and boot the stale
+backup instead of the intended image. Put backups under a subdirectory or rename
+them with a non-`vmlinuz-` prefix such as `backup-vmlinuz-...`.
+
+The script downloads the matching OpenWrt release ImageBuilder and SDK, builds
+OpenZFS for the SDK kernel, installs the repository overlay, embeds the Clevis
+runtime, and produces an unsigned UKI with an empty built-in command line.
+
+The output path can still be overridden explicitly:
+
+```bash
+UKI=/path/to/vmlinuz-custom-openwrt-zbm-clevis.efi ./lab/build-openwrt-imagebuilder-uki.sh
+```
+
+## Legacy build flow
 
 Reference commands:
 

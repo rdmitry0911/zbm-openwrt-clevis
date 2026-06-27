@@ -1,0 +1,24 @@
+#!/bin/sh
+case "${1:-}" in
+  clear|reset)
+    printf '\033[H\033[2J\033[3J'
+    ;;
+  civis)
+    printf '\033[?25l'
+    ;;
+  cnorm)
+    printf '\033[?25h'
+    ;;
+  cup)
+    row="${2:-0}"
+    col="${3:-0}"
+    printf '\033[%s;%sH' "$((row + 1))" "$((col + 1))"
+    ;;
+  cols)
+    printf '80\n'
+    ;;
+  lines)
+    printf '24\n'
+    ;;
+esac
+exit 0
