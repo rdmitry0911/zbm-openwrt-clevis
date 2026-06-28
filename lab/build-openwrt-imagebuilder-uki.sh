@@ -638,6 +638,7 @@ validate_rootfs() {
     "/libexec/init.d/50-import-pools" \
     "/libexec/hooks/early-setup.d/30-console-autosize.sh" \
     "/libexec/load_key.d/10-clevis-tpm2" \
+    "/etc/profile.d/zbm-autostart.sh" \
     "/usr/bin/zbm-kcl-apply" \
     "/usr/bin/zbm-auto-boot" \
     "/usr/bin/tput" \
@@ -665,6 +666,17 @@ validate_rootfs() {
 
   if ! grep -Rqs 'owrt.target_kcl_append' "${rootdir}/usr/bin/zbm-kcl-apply"; then
     printf 'missing target KCL support in zbm-kcl-apply\n' >&2
+    missing=1
+  fi
+
+  if ! grep -Rqs 'owrt.autostart' "${rootdir}/usr/bin/zbm-kcl-apply"; then
+    printf 'missing login autostart KCL support in zbm-kcl-apply\n' >&2
+    missing=1
+  fi
+
+  if ! grep -Rqs 'zbm-autoboot.failed' "${rootdir}/usr/bin/zbm-auto-boot" ||
+     ! grep -Rqs 'zbm-autoboot.failed' "${rootdir}/etc/profile.d/zbm-autostart.sh"; then
+    printf 'missing auto-failure gated login autostart support\n' >&2
     missing=1
   fi
 

@@ -185,6 +185,9 @@ The hook distinguishes auto vs manual mode by the presence of `/run/zbm-autoboot
 
 - before `.done` exists, auto mode is active and interactive prompts are forbidden
 - after `.done` exists, manual mode is allowed to ask for passphrase and to reseal
+- if the automatic `zbm-start` pass returns without a handoff, `zbm-auto-boot`
+  also leaves `/run/zbm-autoboot.failed`; `owrt.autostart=y` uses that marker
+  to run `zbm-start` after the operator logs in
 
 ## Why target OS updates do not force a new manual unlock
 

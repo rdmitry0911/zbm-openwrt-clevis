@@ -4,15 +4,18 @@ OpenWrt-based boot runtime for unlocking an encrypted ZFS root with `clevis` and
 
 Current validated lab chain:
 
-`UEFI -> rEFInd -> OpenWrt UKI -> zbm-auto-boot -> load-key hook / clevis -> donor ZBM runtime -> kexec -> Ubuntu on encrypted ZFS`
+`UEFI -> rEFInd -> OpenWrt UKI -> zbm-auto-boot -> zbm-start -> load-key hook / clevis -> donor ZBM runtime -> kexec -> Ubuntu on encrypted ZFS`
 
 This repository contains:
 
-- reference QEMU and UKI helper scripts from the working lab
+- the current ImageBuilder-based OpenWrt UKI build helper
+- reference QEMU and ESP helper scripts from the working lab
 - the current `load_key` hook used for `clevis`
 - documentation for the boot model, threat model, kernel command line contract, operator interaction, build flow, installation, and self-test
 
-The `lab/` scripts are snapshots from the validated OpenWrt build tree. They are kept here for reference and reuse, but the validated execution still happened inside the OpenWrt source tree with its `build_dir`, `staging_dir`, kernel, and package outputs present.
+The default build flow now runs from this repository with OpenWrt
+ImageBuilder. Legacy scripts that assume a full OpenWrt source tree are kept
+only as reference material.
 
 ## Motivation
 
@@ -50,66 +53,100 @@ The result is a split design:
 - [docs/build-and-install.md](docs/build-and-install.md): build flow, UKI generation, `rEFInd` setup, installation notes
 - [docs/operation-and-selftest.md](docs/operation-and-selftest.md): exact QEMU test procedure and expected operator actions
 - [docs/jwe-backends.md](docs/jwe-backends.md): validated `JWE` storage backends: `zfs`, `efi`, `vfat`
-- [lab/build-uki.sh](lab/build-uki.sh): UKI build helper
+- [lab/build-openwrt-imagebuilder-uki.sh](lab/build-openwrt-imagebuilder-uki.sh): current release UKI build helper
+- [lab/build-overlay-uki.sh](lab/build-overlay-uki.sh): fast overlay rebuild helper for lab iterations
 - [lab/refind-esp.sh](lab/refind-esp.sh): `rEFInd` ESP generator for the lab
-- [lab/run-qemu-uki-tpm.sh](lab/run-qemu-uki-tpm.sh): QEMU + OVMF + swtpm harness
+- [lab/create-ubuntu-zfs-target.sh](lab/create-ubuntu-zfs-target.sh): local encrypted ZFS target disk creator
+- [lab/run-qemu-multigpu-zfs.sh](lab/run-qemu-multigpu-zfs.sh): current QEMU + OVMF + swtpm harness
 - [hooks/load_key_zfs_clevis_hook.sh](hooks/load_key_zfs_clevis_hook.sh): current `clevis` load-key hook
 
 ## Quick start
 
 The reference lab assumes:
 
-- an OpenWrt build tree at `/home/dima/projects/openwrt`
-- a target Ubuntu disk image at `/home/dima/projects/zfsbootmenu/lab.ubuntu-iso/ubuntu-zfs-target.raw`
-- `OVMF`, `swtpm`, `qemu-system-x86_64`, `ukify`, `refind`, and the OpenZFS build outputs already available on the host
+- this repository is the working directory
+- `OVMF`, `swtpm`, `qemu-system-x86_64`, `ukify`, `refind`, and normal build tools are installed on the host
+- donor glibc tools are available under `/tmp/openwrt-zbm-rootfs`, or `HOST_TOOL_ROOTFS` points at an equivalent rootfs
+- `tpm_crb.ko` is available from the matching OpenWrt release build under `dist/openwrt-release-build`, or `TPM_CRB_KO` points at it
 
 Build the current UKI:
 
 ```bash
-cd /home/dima/projects/openwrt
-./zbm-openwrt-refresh-runtime.sh
-./zbm-openwrt-build-uki.sh
+./lab/build-openwrt-imagebuilder-uki.sh
+```
+
+Default output:
+
+```text
+dist/vmlinuz-openwrt-25.12.4-x86-64-generic-zbm-clevis-imagebuilder.efi
+```
+
+Create the local QEMU target disk once:
+
+```bash
+./lab/create-ubuntu-zfs-target.sh
 ```
 
 Boot the lab with the `zfs` backend:
 
 ```bash
-cd /home/dima/projects/openwrt
-rm -rf swtpm-zbm-ubuntu-uki
-REFIND_OPTIONS='rd.shell=0 console=ttyS0,115200n8 loglevel=8 ignore_loglevel clevis.decrypt=yes clevis.store=zfs clevis.pcr_ids=1,4,5,7,9 owrt.auto_bootfs=rpool/ROOT/ubuntu_iu2exh' \
-  ./zbm-openwrt-qemu-run-zbm-ubuntu-uki-tpm.sh
+UKI=dist/vmlinuz-openwrt-25.12.4-x86-64-generic-zbm-clevis-imagebuilder.efi \
+  ./lab/run-qemu-multigpu-zfs.sh
 ```
 
-On the first boot after a rebuild:
+On the first boot after a UKI or `rEFInd` option change, automatic boot is
+expected to fall back to OpenWrt because the old TPM-sealed secret no longer
+matches the new PCR state.
 
-1. Auto boot falls back to OpenWrt because the old TPM-sealed secret no longer matches the new PCR state.
-2. Log in over SSH and run manual `zbm-start`:
+With the default `owrt.autostart=n`, log in over SSH or console and run:
 
 ```bash
 ssh -i /home/dima/.ssh/id_ed25519 -p 10039 root@127.0.0.1
 zbm-start
 ```
 
-3. Inside the hook answer `yes` to reseal and enter the ZFS passphrase.
-4. In the `ZBM` TUI press `Enter` to boot Ubuntu.
-5. Reboot without deleting `swtpm-zbm-ubuntu-uki`.
+With `owrt.autostart=y`, a successful interactive login automatically calls
+`zbm-start` only after the background automatic decrypt/start attempt has
+finished and left `/run/zbm-autoboot.failed`. It does not bypass login and it
+does not run while `zbm-auto-boot` is still active.
 
-On the next cold boot, the same path should go to Ubuntu automatically.
+Inside the hook, answer `yes` to reseal and enter the ZFS passphrase. In the
+`ZBM` TUI, press `Enter` to boot Ubuntu. On the next cold boot with the same
+TPM state and `rEFInd` options, the path should go to Ubuntu automatically.
+
+For unattended first-boot reseal in the QEMU lab:
+
+```bash
+UKI=dist/vmlinuz-openwrt-25.12.4-x86-64-generic-zbm-clevis-imagebuilder.efi \
+RESEAL_KEY_FILE=lab/qemu-zfs-target/zbmtest.key \
+  ./lab/run-qemu-multigpu-zfs.sh
+```
 
 The full procedure, including `efi` and `vfat` backends, is documented in [docs/operation-and-selftest.md](docs/operation-and-selftest.md).
 
 Current runtime quality-of-life additions in the validated image:
 
+- `blkid`, `blockdev`, `losetup`, `mount-utils`, `wipefs`
+- `fdisk`, `sfdisk`, `cfdisk`, `parted`, `partx`
+- `dosfstools`, `e2fsprogs`, `f2fs-tools`, `btrfs-progs`, `lvm2`
+- `nvme-cli`, `smartmontools`, `hdparm`, `swap-utils`
 - `mc`
 - `nano-plus`
 
 Current operator interaction in the donor `ZBM` runtime:
 
 - `Ctrl-C` exits the TUI back to the protected OpenWrt system
-- the old shell-escape and direct chroot shortcuts are intentionally disabled
+- the old shell escape and direct chroot shortcuts are intentionally disabled
 
-For real machines, use a manual `rEFInd` `menuentry` with an `options` line in
-`refind.conf`. The current UKI flow does not consume `refind_linux.conf`.
+For real machines, put runtime policy in the `rEFInd` path that actually loads
+the image:
+
+- for a manual `menuentry`, use the `options` line in `refind.conf`
+- for a `vmlinuz-*` image loaded through rEFInd's Linux loader path, use the
+  adjacent `refind_linux.conf`
+
+Do not leave backup files whose names also start with `vmlinuz-` next to the
+active image. `rEFInd` can treat them as bootable Linux images.
 
 If you put security-relevant policy into external `rEFInd` kernel command line
 parameters, read [docs/threat-model.md](docs/threat-model.md) and

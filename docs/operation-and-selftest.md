@@ -31,26 +31,30 @@ and gateway reachability when a gateway is configured. This keeps SSH recovery
 available when automatic unlock fails. If the LAN bridge does not become ready,
 the runtime can fall back to a physical interface.
 
+`owrt.autostart=y` is only a fallback convenience after this automatic pass has
+failed. It does not bypass login, and it calls `zbm-start` only when
+`zbm-auto-boot` has left `/run/zbm-autoboot.failed`.
+
 ## Common QEMU preparation
 
 All examples below assume:
 
 ```bash
-cd /home/dima/projects/openwrt
-./zbm-openwrt-refresh-runtime.sh
-./zbm-openwrt-build-uki.sh
+./lab/build-openwrt-imagebuilder-uki.sh
+./lab/create-ubuntu-zfs-target.sh
 ```
 
 To start with a fresh TPM and fresh `OVMF_VARS`:
 
 ```bash
-rm -rf /home/dima/projects/openwrt/swtpm-zbm-ubuntu-uki
+rm -rf dist/swtpm-multigpu-zfs
 ```
 
 The QEMU harness is:
 
 ```bash
-./zbm-openwrt-qemu-run-zbm-ubuntu-uki-tpm.sh
+UKI=dist/vmlinuz-openwrt-25.12.4-x86-64-generic-zbm-clevis-imagebuilder.efi \
+  ./lab/run-qemu-multigpu-zfs.sh
 ```
 
 SSH during the OpenWrt phase:
@@ -64,8 +68,8 @@ ssh -i /home/dima/.ssh/id_ed25519 -p 10039 root@127.0.0.1
 First boot:
 
 ```bash
-REFIND_OPTIONS='rd.shell=0 console=ttyS0,115200n8 loglevel=8 ignore_loglevel clevis.decrypt=yes clevis.store=zfs clevis.pcr_ids=1,4,5,7,9 owrt.auto_bootfs=rpool/ROOT/ubuntu_iu2exh' \
-  ./zbm-openwrt-qemu-run-zbm-ubuntu-uki-tpm.sh
+UKI=dist/vmlinuz-openwrt-25.12.4-x86-64-generic-zbm-clevis-imagebuilder.efi \
+  ./lab/run-qemu-multigpu-zfs.sh
 ```
 
 Expected behavior:
@@ -90,7 +94,7 @@ Inside the hook:
 Second boot:
 
 - stop QEMU
-- do not remove `swtpm-zbm-ubuntu-uki`
+- do not remove `dist/swtpm-multigpu-zfs`
 - run the same command again
 
 Success criteria:
@@ -104,8 +108,9 @@ Success criteria:
 First boot:
 
 ```bash
-REFIND_OPTIONS='rd.shell=0 console=ttyS0,115200n8 loglevel=8 ignore_loglevel clevis.decrypt=yes clevis.store=efi clevis.pcr_ids=1,4,5,7,9 owrt.auto_bootfs=rpool/ROOT/ubuntu_iu2exh' \
-  ./zbm-openwrt-qemu-run-zbm-ubuntu-uki-tpm.sh
+UKI=dist/vmlinuz-openwrt-25.12.4-x86-64-generic-zbm-clevis-imagebuilder.efi \
+REFIND_OPTIONS='rd.shell=0 console=tty0 console=ttyS0,115200n8 loglevel=8 ignore_loglevel clevis.decrypt=yes clevis.store=efi clevis.pcr_ids=1,4,5,7,9 owrt.host=zbm-lab owrt.ttylogin=0 owrt.autostart=n owrt.auto_bootfs=zbmtest/ROOT/ubuntu' \
+  ./lab/run-qemu-multigpu-zfs.sh
 ```
 
 Manual reseal is the same:
@@ -118,17 +123,17 @@ zbm-start
 After reseal, confirm that `efivar` storage exists:
 
 ```bash
-efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_rpool_ROOT_ubuntu_iu2exh -p
-efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_rpool_ROOT_ubuntu_iu2exh_1 -p
+efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_zbmtest_ROOT_ubuntu -p
+efivar -n 55555555-5555-5555-5555-555555555555-ClevisJWE_zbmtest_ROOT_ubuntu_1 -p
 ```
 
-If the active encryption root differs, replace `rpool_ROOT_ubuntu_iu2exh`
+If the active encryption root differs, replace `zbmtest_ROOT_ubuntu`
 with the sanitized encryption-root tag.
 
 Second boot:
 
 - stop QEMU
-- keep `swtpm-zbm-ubuntu-uki`
+- keep `dist/swtpm-multigpu-zfs`
 - start the same command again
 
 Success criteria:
@@ -139,17 +144,20 @@ Success criteria:
 
 ## Test: vfat backend
 
-The validated lab location is the Ubuntu ESP:
+The current lab can let `zbm-kcl-apply` derive the `vfat` JWE location from
+the ESP that loaded the OpenWrt image. An explicit override is still possible;
+for the generated lab ESP it is typically the first virtio VFAT disk:
 
 ```text
-clevis.file_location=/dev/vdb1:/clevis
+clevis.file_location=/dev/vda:/clevis
 ```
 
 First boot:
 
 ```bash
-REFIND_OPTIONS='rd.shell=0 console=ttyS0,115200n8 loglevel=8 ignore_loglevel clevis.decrypt=yes clevis.store=vfat clevis.file_location=/dev/vdb1:/clevis clevis.pcr_ids=1,4,5,7,9 owrt.auto_bootfs=rpool/ROOT/ubuntu_iu2exh' \
-  ./zbm-openwrt-qemu-run-zbm-ubuntu-uki-tpm.sh
+UKI=dist/vmlinuz-openwrt-25.12.4-x86-64-generic-zbm-clevis-imagebuilder.efi \
+REFIND_OPTIONS='rd.shell=0 console=tty0 console=ttyS0,115200n8 loglevel=8 ignore_loglevel clevis.decrypt=yes clevis.store=vfat clevis.pcr_ids=1,4,5,7,9 owrt.host=zbm-lab owrt.ttylogin=0 owrt.autostart=n owrt.auto_bootfs=zbmtest/ROOT/ubuntu' \
+  ./lab/run-qemu-multigpu-zfs.sh
 ```
 
 Manual reseal:
@@ -163,27 +171,27 @@ After reseal, confirm files on the chosen VFAT filesystem:
 
 ```bash
 mkdir -p /mnt/testvfat
-mount /dev/vdb1 /mnt/testvfat
+mount /dev/vda /mnt/testvfat
 ls -l /mnt/testvfat/clevis
 umount /mnt/testvfat
 ```
 
 Expected files:
 
-- `Clevis.rpool_ROOT_ubuntu_iu2exh.JWE`
-- `Clevis.rpool_ROOT_ubuntu_iu2exh.JWE_1`
-- `Clevis.rpool_ROOT_ubuntu_iu2exh.JWE_4`
-- `Clevis.rpool_ROOT_ubuntu_iu2exh.JWE_5`
-- `Clevis.rpool_ROOT_ubuntu_iu2exh.JWE_7`
-- `Clevis.rpool_ROOT_ubuntu_iu2exh.JWE_9`
+- `Clevis.zbmtest_ROOT_ubuntu.JWE`
+- `Clevis.zbmtest_ROOT_ubuntu.JWE_1`
+- `Clevis.zbmtest_ROOT_ubuntu.JWE_4`
+- `Clevis.zbmtest_ROOT_ubuntu.JWE_5`
+- `Clevis.zbmtest_ROOT_ubuntu.JWE_7`
+- `Clevis.zbmtest_ROOT_ubuntu.JWE_9`
 
-If the active encryption root differs, replace `rpool_ROOT_ubuntu_iu2exh`
+If the active encryption root differs, replace `zbmtest_ROOT_ubuntu`
 with the sanitized encryption-root tag.
 
 Second boot:
 
 - stop QEMU
-- keep `swtpm-zbm-ubuntu-uki`
+- keep `dist/swtpm-multigpu-zfs`
 - start the same command again
 
 Success criteria:
@@ -260,6 +268,7 @@ The default lab `rEFInd` options include:
 
 ```text
 owrt.console_rotate=right
+owrt.autostart=n
 owrt.target_console_rotate=right
 owrt.target_fbcon_map=0
 owrt.target_kcl_append=""console=tty0 console=ttyS0,115200n8 loglevel=7 ignore_loglevel video=Virtual-1:1280x800@60 video=Virtual-2:1280x800@60 video=Virtual-3:768x1024@60""

@@ -11,6 +11,7 @@ mkdir -p /run
 mkdir -p /run/zbm-progress
 : > /run/zbm-progress/zbm-autoboot.begin
 rm -f /run/zbm-autoboot.done
+rm -f /run/zbm-autoboot.failed
 touch /run/zbm-autoboot.pending
 cleanup() {
   : > /run/zbm-progress/zbm-autoboot.cleanup
@@ -45,7 +46,14 @@ export ZBM_MENU_TIMEOUT="${ZBM_MENU_TIMEOUT:-0}"
 : > /run/zbm-progress/zbm-autoboot.enter-zbm-start
 printf '<6>%s\n' '[zbm-autoboot] entering zbm-start' >/dev/kmsg 2>/dev/null || true
 echo "[zbm-autoboot] entering zbm-start"
-/usr/bin/zbm-start || true
+if /usr/bin/zbm-start; then
+  :
+else
+  : > /run/zbm-autoboot.failed
+  : > /run/zbm-progress/zbm-autoboot.failed
+  printf '<4>%s\n' '[zbm-autoboot] zbm-start failed' >/dev/kmsg 2>/dev/null || true
+  echo "[zbm-autoboot] zbm-start failed"
+fi
 : > /run/zbm-progress/zbm-autoboot.returned
 printf '<6>%s\n' '[zbm-autoboot] zbm-start returned' >/dev/kmsg 2>/dev/null || true
 echo "[zbm-autoboot] zbm-start returned"

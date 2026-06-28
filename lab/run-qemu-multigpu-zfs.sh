@@ -27,7 +27,7 @@ VNC_DISPLAY="${VNC_DISPLAY:-59}"
 
 TARGET_APPEND_DEFAULT='console=tty0 console=ttyS0,115200n8 loglevel=7 ignore_loglevel video=Virtual-1:1280x800@60 video=Virtual-2:1280x800@60 video=Virtual-3:768x1024@60'
 TARGET_APPEND="${TARGET_APPEND:-${TARGET_APPEND_DEFAULT}}"
-REFIND_OPTIONS="${REFIND_OPTIONS:-rd.shell=0 console=tty0 console=ttyS0,115200n8 loglevel=8 ignore_loglevel clevis.decrypt=yes clevis.store=zfs clevis.pcr_ids=1,4,5,7,9 owrt.host=zbm-lab owrt.ttylogin=0 owrt.auto_bootfs=${TARGET_POOL}/ROOT/ubuntu owrt.console_rotate=right owrt.target_console_rotate=right owrt.target_fbcon_map=0 owrt.target_kcl_append=\"\"${TARGET_APPEND}\"\"}"
+REFIND_OPTIONS="${REFIND_OPTIONS:-rd.shell=0 console=tty0 console=ttyS0,115200n8 loglevel=8 ignore_loglevel clevis.decrypt=yes clevis.store=zfs clevis.pcr_ids=1,4,5,7,9 owrt.host=zbm-lab owrt.ttylogin=0 owrt.autostart=n owrt.auto_bootfs=${TARGET_POOL}/ROOT/ubuntu owrt.console_rotate=right owrt.target_console_rotate=right owrt.target_fbcon_map=0 owrt.target_kcl_append=\"\"${TARGET_APPEND}\"\"}"
 RESEAL_KEY_DRIVE_ARGS=""
 
 if [ -n "${RESEAL_KEY_DRIVE_FILE}" ]; then

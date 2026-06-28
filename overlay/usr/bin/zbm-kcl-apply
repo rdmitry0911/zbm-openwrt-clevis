@@ -99,6 +99,23 @@ normalize_console_rotate() {
   esac
 }
 
+normalize_yes_no() {
+  local value
+  value="${1,,}"
+
+  case "${value}" in
+    ""|0|n|no|false|off)
+      printf '%s' n
+      ;;
+    1|y|yes|true|on)
+      printf '%s' y
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 apply_console_rotate() {
   local rotation target
 
@@ -367,6 +384,7 @@ wifi_encryption="$(kget owrt.wifi_encryption || true)"
 ssh_pubkey="$(kget owrt.ssh_pubkey || true)"
 root_hash="$(kget owrt.root_password_hash || true)"
 tty_login="$(kget owrt.ttylogin || true)"
+autostart="$(kget owrt.autostart || true)"
 console_rotate="$(kget owrt.console_rotate owrt.fbcon_rotate || true)"
 target_kcl_append="$(kget owrt.target_kcl_append || true)"
 target_kcl_override="$(kget owrt.target_kcl_override || true)"
@@ -393,6 +411,8 @@ host_name="$(kget owrt.host clevis.host || true)"
 [ -n "${clevis_pcr_ids}" ] || clevis_pcr_ids=1,4,5,7,9
 [ -n "${host_name}" ] || host_name=openwrt-zbm
 [ -n "${tty_login}" ] || tty_login=1
+autostart="$(normalize_yes_no "${autostart}" || true)"
+[ -n "${autostart}" ] || autostart=n
 if [ "${clevis_store}" = "vfat" ] && [ -z "${clevis_file_location}" ]; then
   clevis_file_location="$(default_vfat_clevis_file_location || true)"
   if [ -n "${clevis_file_location}" ]; then
@@ -494,6 +514,7 @@ write_env_file /run/zbm-runtime/kcl.env \
   ZBM_CLEVIS_CHAT_ID "${clevis_chat_id}" \
   ZBM_CLEVIS_API_TOKEN "${clevis_api_token}" \
   ZBM_AUTO_BOOTFS "${auto_bootfs}" \
+  ZBM_AUTOSTART "${autostart}" \
   ZBM_HOST "${host_name}"
 
 cp /run/zbm-runtime/kcl.env /etc/zfsbootmenu-kcl.env

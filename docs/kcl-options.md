@@ -245,6 +245,22 @@ parsing.
 
 `owrt.ttylogin=0` is insecure and should be treated as a debug-only mode.
 
+### `owrt.autostart`
+
+- Values: `y`, `n` (`yes/no`, `1/0`, `true/false`, and `on/off` are also accepted)
+- Default: `n`
+- Consumer: `zbm-kcl-apply`, `/etc/profile.d/zbm-autostart.sh`
+- Meaning:
+  - `y`: after the automatic decrypt/start attempt fails and an operator logs
+    in interactively, automatically calls `zbm-start`
+  - `n`: after login, leave the operator at the OpenWrt shell
+
+This does not bypass login. Use `owrt.ttylogin=0` separately only for
+debug-only local console autologin. If the background `zbm-auto-boot` pass is
+still running when the shell profile is loaded, the autostart hook waits up to
+60 seconds. It calls `zbm-start` only when that pass has left the
+`/run/zbm-autoboot.failed` marker.
+
 ## Host identity and notifications
 
 ### `owrt.host`

@@ -2,23 +2,23 @@
 
 ## Build prerequisites
 
-The reference implementation was built in an OpenWrt `x86_64` tree with:
+The current release image is built from this repository with the OpenWrt
+ImageBuilder helper. The host needs:
 
 - `qemu-system-x86_64`
 - `OVMF`
 - `swtpm` and `swtpm_setup`
 - `ukify`
 - `refind`
-- an OpenZFS source tree and built userspace/kernel modules
+- normal build tools: `git`, `curl`, `make`, `gcc`, `g++`, `python3`, `perl`,
+  `awk`, `sed`, `tar`, `cpio`, `gzip`, `xz`, `rsync`, `zstd`, `patch`,
+  `objcopy`, `readelf`, `autoconf`, `automake`, `libtoolize`, `pkg-config`,
+  `bison`, `flex`, `fakeroot`
+- donor glibc tools under `/tmp/openwrt-zbm-rootfs`, or `HOST_TOOL_ROOTFS`
+  pointing at an equivalent rootfs
+- `tpm_crb.ko` from the matching OpenWrt release build under
+  `dist/openwrt-release-build`, or `TPM_CRB_KO=/path/to/tpm_crb.ko`
 - the target Ubuntu ZFS disk image used for the lab
-
-The runtime also expects the local OpenWrt tree to contain:
-
-- the donor `ZFSBootMenu` runtime
-- the current `load_key_zfs_clevis_hook.sh`
-- the OpenWrt staging tree and kernel build outputs
-
-The helper scripts stored in this repository under `lab/` are reference copies. They assume the surrounding OpenWrt build tree exists, or that equivalent paths are supplied through environment variables.
 
 ## ImageBuilder build flow
 
@@ -53,21 +53,15 @@ UKI=/path/to/vmlinuz-custom-openwrt-zbm-clevis.efi ./lab/build-openwrt-imagebuil
 
 ## Legacy build flow
 
-Reference commands:
+The legacy full-source OpenWrt builder is still available for reference:
 
 ```bash
-cd /home/dima/projects/openwrt
-./zbm-openwrt-qemu-configure.sh
-./zbm-openwrt-refresh-runtime.sh
-./zbm-openwrt-build-uki.sh
+./lab/build-openwrt-release-uki.sh
 ```
 
-Outputs:
+Default output:
 
-- `bin/targets/x86/64/openwrt-x86-64-generic-initramfs-kernel.bin`
-- `bin/targets/x86/64/openwrt-x86-64-generic-zbm.efi`
-
-The UKI build is done by [lab/build-uki.sh](../lab/build-uki.sh).
+- `dist/openwrt-25.12.4-x86-64-generic-zbm-clevis.efi`
 
 ## What is inside the UKI
 
@@ -94,15 +88,16 @@ Typical generated entry:
 menuentry "OpenWrt ZBM UKI" {
     ostype Linux
     loader /EFI/OPENWRT/OPENWRT.EFI
-    options "rd.shell=0 console=ttyS0,115200n8 loglevel=8 ignore_loglevel clevis.decrypt=yes clevis.store=zfs clevis.pcr_ids=1,4,5,7,9 owrt.auto_bootfs=rpool/ROOT/ubuntu_iu2exh"
+    options "rd.shell=0 console=ttyS0,115200n8 loglevel=8 ignore_loglevel clevis.decrypt=yes clevis.store=zfs clevis.pcr_ids=1,4,5,7,9 owrt.autostart=n owrt.auto_bootfs=rpool/ROOT/ubuntu_iu2exh"
 }
 ```
 
 Important:
 
-- the validated UKI path uses a manual `menuentry` in `refind.conf`
-- in that mode, `rEFInd` takes runtime policy from the `options` line in `refind.conf`
-- `refind_linux.conf` is not used by this manual UKI entry
+- a manual `menuentry` takes runtime policy from its `options` line in
+  `refind.conf`
+- a `vmlinuz-*` image loaded through rEFInd's Linux loader path can take
+  runtime policy from the adjacent `refind_linux.conf`
 - keep the `options` string on a single logical line
 
 If you want to pass a public SSH key through `rEFInd`, quote it inside the
@@ -120,20 +115,21 @@ owrt.root_password_hash=$6$...
 
 The current build no longer bakes in the builder host SSH key by default. If a
 default key is desired at build time, set `DEFAULT_SSH_PUBKEY_FILE` before
-running `zbm-openwrt-refresh-runtime.sh`.
+running `./lab/build-openwrt-imagebuilder-uki.sh`.
 
 ## Installation on a real machine
 
 The minimal installation steps are:
 
-1. Copy `openwrt-x86-64-generic-zbm.efi` to the machine ESP, for example:
+1. Copy the built UKI to the machine ESP, for example:
 
 ```text
-/EFI/OPENWRT/OPENWRT.EFI
+/EFI/OPENWRT/vmlinuz-openwrt-25.12.4-x86-64-generic-zbm-clevis.efi
 ```
 
-2. Add a manual `rEFInd` menu entry pointing to that file.
-3. Put the required runtime parameters into the `options` line.
+2. Either add a manual `rEFInd` menu entry pointing to that file, or put a
+   matching `refind_linux.conf` next to the `vmlinuz-*` image.
+3. Put the required runtime parameters into the selected rEFInd policy source.
 4. Ensure the target system layout matches the assumptions:
    - encrypted ZFS root
    - a valid keylocation on the encryption root
