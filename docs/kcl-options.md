@@ -171,6 +171,32 @@ The named values map to Linux fbcon rotation values:
 This does not move the target kernel or `initramfs` out of the encrypted ZFS
 root. It only alters the command line used for the final handoff.
 
+### `owrt.target_console_font`
+
+- Alias: `owrt.target_fbcon_font`
+- Value format: Linux `fbcon=font:` font name, for example `TER16x32`
+- Default: empty
+- Consumer: `zbm-kcl-apply`, donor `ZFSBootMenu` runtime
+- Meaning: appends `fbcon=font:<value>` to the target Linux command line when
+  donor `ZFSBootMenu` loads the selected kernel and `initramfs` with `kexec`
+
+This depends on the target Linux kernel having the requested font built in.
+Ubuntu's generic kernel on the current host includes `TER16x32`.
+
+### `owrt.console_font`
+
+- Alias: `owrt.fbcon_font`
+- Values: `auto`, `largest`, `none`, a bundled font name such as `ter-v32b`,
+  or an absolute `.psf` path
+- Default: `auto`
+- Consumer: `zbm-kcl-apply`
+- Meaning: loads a Terminus console font for the OpenWrt framebuffer console
+
+`auto` tries the bundled fonts from largest to smallest and keeps the largest
+font that leaves at least 110 text columns. On a 3840px-wide framebuffer this
+selects `ter-v32b.psf`, the largest bundled font. Use `largest` to force that
+font regardless of console width.
+
 ### `owrt.target_fbcon_map`
 
 - Value format: Linux `fbcon=map:` value
@@ -325,6 +351,10 @@ adapters whose `ethN` names can change across boots.
 The parser accepts lower-case or upper-case colon-separated MAC addresses and
 hyphen-separated MAC addresses.
 
+The recovery image does not expose a `lan` interface or `br-lan` bridge. A
+single wired adapter is still treated as `wan`; DHCP service is disabled on
+both `wan` and `wwan`.
+
 ### `owrt.net_ipaddr`
 
 - Default: empty
@@ -382,14 +412,43 @@ If empty, generated Wi-Fi config stays disabled.
 ### `owrt.wifi_ifname`
 
 - Default: `wlan0`
-- Consumer: `zbm-kcl-apply`
-- Meaning: interface name label stored in runtime env
+- Consumer: `zbm-kcl-apply`, `zbm-network-up`
+- Meaning: preferred STA interface name
+
+If OpenWrt `netifd` does not create the STA interface, `zbm-network-up` uses
+this name for its manual `iw phy ... interface add ... type managed` fallback.
 
 ### `owrt.wifi_encryption`
 
 - Default: `psk2`
 - Consumer: `zbm-kcl-apply`
 - Meaning: OpenWrt Wi-Fi encryption mode
+
+### `owrt.wifi_band`
+
+- Default: `2g`
+- Values: `2g`, `5g`, `6g`, `60g`
+- Consumer: `zbm-kcl-apply`
+- Meaning: OpenWrt radio band for the generated STA radio
+
+### `owrt.wifi_channel`
+
+- Default: `auto`
+- Consumer: `zbm-kcl-apply`
+- Meaning: OpenWrt radio channel
+
+### `owrt.wifi_htmode`
+
+- Default: `HT20`
+- Consumer: `zbm-kcl-apply`
+- Meaning: OpenWrt radio HT mode
+
+### `owrt.wifi_country`
+
+- Default: empty
+- Consumer: `zbm-kcl-apply`, `zbm-network-up` fallback
+- Meaning: optional regulatory country code for OpenWrt and manual
+  `wpa_supplicant` fallback
 
 ## Common non-package kernel arguments
 

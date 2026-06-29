@@ -40,6 +40,16 @@ KEXEC_TOOLS_VERSION="${KEXEC_TOOLS_VERSION:-2.0.28}"
 KEXEC_TOOLS_URL="${KEXEC_TOOLS_URL:-https://cdn.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_TOOLS_VERSION}.tar.xz}"
 KEXEC_TOOLS_HASH="${KEXEC_TOOLS_HASH:-d2f0ef872f39e2fe4b1b01feb62b0001383207239b9f8041f98a95564161d053}"
 PATCHED_KEXEC="${PATCHED_KEXEC:-${BUILDDIR}/kexec-tools-${KEXEC_TOOLS_VERSION}-patched/install/usr/sbin/kexec}"
+ZBM_SETFONT_SRC="${ZBM_SETFONT_SRC:-${TOPDIR}/tools/zbm-setfont.c}"
+ZBM_SETFONT="${ZBM_SETFONT:-${BUILDDIR}/zbm-setfont/setfont}"
+EXTRA_IWLWIFI_FIRMWARE_NAME="${EXTRA_IWLWIFI_FIRMWARE_NAME:-iwlwifi-so-a0-gf-a0-89.ucode}"
+EXTRA_IWLWIFI_FIRMWARE_URL="${EXTRA_IWLWIFI_FIRMWARE_URL:-https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/intel/iwlwifi/${EXTRA_IWLWIFI_FIRMWARE_NAME}?h=20260221}"
+EXTRA_IWLWIFI_FIRMWARE_HASH="${EXTRA_IWLWIFI_FIRMWARE_HASH:-a68167801e24ac5c03f594f23ca7c0c1b151c7cfbe97da45ee22206dc2d970bf}"
+EXTRA_IWLWIFI_FIRMWARE="${EXTRA_IWLWIFI_FIRMWARE:-${BUILDDIR}/downloads/${EXTRA_IWLWIFI_FIRMWARE_NAME}}"
+EXTRA_IWLWIFI_PNVM_NAME="${EXTRA_IWLWIFI_PNVM_NAME:-iwlwifi-so-a0-gf-a0.pnvm}"
+EXTRA_IWLWIFI_PNVM_URL="${EXTRA_IWLWIFI_PNVM_URL:-https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/intel/iwlwifi/${EXTRA_IWLWIFI_PNVM_NAME}?h=20260221}"
+EXTRA_IWLWIFI_PNVM_HASH="${EXTRA_IWLWIFI_PNVM_HASH:-e855e1e545e76a62b2314dfbcdaf36fe12ca5e798b7d00c5e9a1d4740732ff09}"
+EXTRA_IWLWIFI_PNVM="${EXTRA_IWLWIFI_PNVM:-${BUILDDIR}/downloads/${EXTRA_IWLWIFI_PNVM_NAME}}"
 
 IB_DIR="${IB_DIR:-${BUILDDIR}/imagebuilder}"
 SDK_DIR="${SDK_DIR:-${BUILDDIR}/sdk}"
@@ -97,6 +107,18 @@ download() {
   mkdir -p "$(dirname "${out}")"
   run curl -fL --retry 3 -o "${out}.tmp" "${url}"
   mv "${out}.tmp" "${out}"
+}
+
+download_checked() {
+  local url out want have
+
+  url="${1}"
+  out="${2}"
+  want="${3}"
+
+  download "${url}" "${out}"
+  have="$(sha256sum "${out}" | awk '{print $1}')"
+  [ "${have}" = "${want}" ] || die "download hash mismatch for ${out}: ${have}"
 }
 
 extract_single_dir_tarball() {
@@ -306,6 +328,52 @@ install_patched_kexec() {
   install -d "${FILES_DIR}/usr/sbin" "${FILES_DIR}/sbin"
   install -m 0755 "${PATCHED_KEXEC}" "${FILES_DIR}/usr/sbin/kexec"
   ln -snf ../usr/sbin/kexec "${FILES_DIR}/sbin/kexec"
+}
+
+build_zbm_setfont() {
+  local cross
+
+  [ -f "${ZBM_SETFONT_SRC}" ] || die "missing setfont source: ${ZBM_SETFONT_SRC}"
+
+  if [ "${ZBM_SETFONT_FORCE_REBUILD:-0}" != "1" ] &&
+     [ -x "${ZBM_SETFONT}" ] &&
+     [ "${ZBM_SETFONT}" -nt "${ZBM_SETFONT_SRC}" ]; then
+    log "using existing setfont helper: ${ZBM_SETFONT}"
+    return 0
+  fi
+
+  cross="$(sdk_cross_prefix)"
+  mkdir -p "$(dirname "${ZBM_SETFONT}")"
+  log "building setfont helper"
+  run env STAGING_DIR="${SDK_DIR}/staging_dir" \
+    "${cross}gcc" -Os -Wall -Wextra -std=c99 -o "${ZBM_SETFONT}" "${ZBM_SETFONT_SRC}"
+  "${cross}strip" --strip-unneeded "${ZBM_SETFONT}" || true
+}
+
+install_zbm_setfont() {
+  build_zbm_setfont
+  install -d "${FILES_DIR}/usr/bin"
+  install -m 0755 "${ZBM_SETFONT}" "${FILES_DIR}/usr/bin/setfont"
+}
+
+install_extra_iwlwifi_firmware() {
+  [ "${INSTALL_EXTRA_IWLWIFI_FIRMWARE:-1}" = "1" ] || return 0
+
+  download_checked \
+    "${EXTRA_IWLWIFI_FIRMWARE_URL}" \
+    "${EXTRA_IWLWIFI_FIRMWARE}" \
+    "${EXTRA_IWLWIFI_FIRMWARE_HASH}"
+  download_checked \
+    "${EXTRA_IWLWIFI_PNVM_URL}" \
+    "${EXTRA_IWLWIFI_PNVM}" \
+    "${EXTRA_IWLWIFI_PNVM_HASH}"
+
+  log "installing extra iwlwifi firmware ${EXTRA_IWLWIFI_FIRMWARE_NAME} ${EXTRA_IWLWIFI_PNVM_NAME}"
+  install -d "${FILES_DIR}/lib/firmware"
+  install -m 0644 "${EXTRA_IWLWIFI_FIRMWARE}" \
+    "${FILES_DIR}/lib/firmware/${EXTRA_IWLWIFI_FIRMWARE_NAME}"
+  install -m 0644 "${EXTRA_IWLWIFI_PNVM}" \
+    "${FILES_DIR}/lib/firmware/${EXTRA_IWLWIFI_PNVM_NAME}"
 }
 
 module_this_module_size() {
@@ -575,8 +643,10 @@ prepare_files_overlay() {
   install_clevis_scripts
   install_donor_glibc_tools
   install_repo_overlay
+  install_extra_iwlwifi_firmware
   install_extra_kernel_modules
   install_patched_kexec
+  install_zbm_setfont
 }
 
 sanitize_package_name() {
@@ -597,6 +667,8 @@ imagebuilder_packages() {
       jq \
       libatomic \
       libtirpc \
+      pciutils \
+      usbutils \
       -i915-firmware-dmc \
       -kmod-acpi-video \
       -kmod-backlight \
@@ -697,6 +769,9 @@ validate_rootfs() {
     "/usr/bin/fzf" \
     "/usr/bin/jose" \
     "/usr/bin/jq" \
+    "/usr/bin/lspci" \
+    "/usr/bin/lsusb" \
+    "/usr/bin/setfont" \
     "/usr/sbin/blkid" \
     "/usr/sbin/wpad" \
     "/usr/sbin/wpa_supplicant" \
@@ -708,6 +783,10 @@ validate_rootfs() {
     "/lib/modules/${krel}/cfg80211.ko" \
     "/lib/modules/${krel}/mac80211.ko" \
     "/lib/modules/${krel}/iwlwifi.ko" \
+    "/lib/modules/${krel}/iwldvm.ko" \
+    "/lib/modules/${krel}/iwlmvm.ko" \
+    "/lib/firmware/${EXTRA_IWLWIFI_FIRMWARE_NAME}" \
+    "/lib/firmware/${EXTRA_IWLWIFI_PNVM_NAME}" \
     "/lib/modules/${krel}/usbnet.ko" \
     "/lib/modules/${krel}/asix.ko" \
     "/lib/modules/${krel}/ax88179_178a.ko" \
@@ -719,7 +798,7 @@ validate_rootfs() {
     "/lib/modules/${krel}/zfs.ko" \
     "/lib/modules/${krel}/tpm_crb.ko" \
     "/lib/modules/${krel}/tpm_crb.good.ko"; do
-    if [ ! -e "${rootdir}${path}" ]; then
+    if [ ! -e "${rootdir}${path}" ] && [ ! -L "${rootdir}${path}" ]; then
       printf 'missing rootfs path: %s\n' "${path}" >&2
       missing=1
     fi

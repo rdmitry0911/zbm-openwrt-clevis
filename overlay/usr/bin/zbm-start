@@ -5,12 +5,28 @@ export PATH=/usr/bin:/usr/sbin:/bin:/sbin
 mode="${ZBM_MODE:-manual}"
 [ "${ZBM_AUTO_BOOT:-0}" = "1" ] && mode=auto
 
+autoboot_active() {
+  local pid
+
+  [ -e /run/zbm-autoboot.pending ] || return 1
+  [ ! -e /run/zbm-autoboot.done ] || return 1
+
+  pid="$(cat /run/zbm-autoboot.pid 2>/dev/null || true)"
+  if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+    return 0
+  fi
+
+  rm -f /run/zbm-autoboot.pending /run/zbm-autoboot.pid
+  touch /run/zbm-autoboot.done
+  return 1
+}
+
 mkdir -p /run/zbm-progress
 : > /run/zbm-progress/zbm-start.begin
 printf '<6>%s\n' '[zbm-start] begin' >/dev/kmsg 2>/dev/null || true
 echo "[zbm-start] begin"
 
-if [ "${mode}" != "auto" ] && [ ! -e /run/zbm-autoboot.done ]; then
+if [ "${mode}" != "auto" ] && autoboot_active; then
   echo "Automatic ZBM start has not finished yet. Please try again later." >&2
   exit 1
 fi

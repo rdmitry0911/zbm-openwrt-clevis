@@ -25,11 +25,12 @@ The automatic lifecycle is the same path without human interaction:
 
 If automatic unlock works, the donor runtime proceeds directly to `kexec` and the target OS boots.
 
-Before entering `zbm-start`, `zbm-auto-boot` reapplies the runtime network
-configuration and waits for an IPv4 address, a default route, link readiness,
-and gateway reachability when a gateway is configured. This keeps SSH recovery
-available when automatic unlock fails. If the LAN bridge does not become ready,
-the runtime can fall back to a physical interface.
+After applying KCL, `zbm-auto-boot` always reapplies the runtime network
+configuration, even when `owrt.autostart=n` disables automatic entry into
+`zbm-start`. It waits for an IPv4 address, a default route, link readiness, and
+gateway reachability when a gateway is configured. This keeps SSH recovery
+available for the manual path. The recovery image exposes only uplink
+interfaces (`wan` and optional `wwan`), not a `lan` bridge.
 
 `owrt.autostart=y` is only a fallback convenience after this automatic pass has
 failed. It does not bypass login, and it calls `zbm-start` only when

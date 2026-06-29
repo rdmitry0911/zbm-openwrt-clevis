@@ -19,9 +19,18 @@ fi
 
 [ -r /run/zbm-runtime/kcl.env ] && source /run/zbm-runtime/kcl.env
 
+if [ -x /usr/bin/zbm-network-up ]; then
+  : > /run/zbm-progress/zbm-autoboot.apply-network
+  printf '<6>%s\n' '[zbm-autoboot] applying runtime network' >/dev/kmsg 2>/dev/null || true
+  echo "[zbm-autoboot] applying runtime network"
+  /usr/bin/zbm-network-up >/tmp/zbm-network-up.log 2>&1 || true
+fi
+
 case "${ZBM_AUTOSTART:-n}" in
   1|y|Y|yes|YES|true|TRUE|on|ON) ;;
   *)
+    rm -f /run/zbm-autoboot.pending /run/zbm-autoboot.failed /run/zbm-autoboot.pid
+    touch /run/zbm-autoboot.done
     : > /run/zbm-progress/zbm-autoboot.disabled
     printf '<6>%s\n' '[zbm-autoboot] disabled by owrt.autostart' >/dev/kmsg 2>/dev/null || true
     echo "[zbm-autoboot] disabled by owrt.autostart"
@@ -33,23 +42,17 @@ esac
 rm -f /run/zbm-autoboot.done
 rm -f /run/zbm-autoboot.failed
 touch /run/zbm-autoboot.pending
+printf '%s\n' "$$" > /run/zbm-autoboot.pid
 cleanup() {
   : > /run/zbm-progress/zbm-autoboot.cleanup
   printf '<6>%s\n' '[zbm-autoboot] cleanup' >/dev/kmsg 2>/dev/null || true
   echo "[zbm-autoboot] cleanup"
   rm -f "${BASE:-/zfsbootmenu}/active" 2>/dev/null || true
   /usr/bin/zbm-end >/dev/null 2>&1 || true
-  rm -f /run/zbm-autoboot.pending
+  rm -f /run/zbm-autoboot.pending /run/zbm-autoboot.pid
   touch /run/zbm-autoboot.done
 }
 trap cleanup EXIT INT TERM
-
-if [ -x /usr/bin/zbm-network-up ]; then
-  : > /run/zbm-progress/zbm-autoboot.apply-network
-  printf '<6>%s\n' '[zbm-autoboot] applying runtime network' >/dev/kmsg 2>/dev/null || true
-  echo "[zbm-autoboot] applying runtime network"
-  /usr/bin/zbm-network-up >/tmp/zbm-network-up.log 2>&1 || true
-fi
 
 export ZBM_AUTO_BOOT=1
 export ZBM_MODE=auto

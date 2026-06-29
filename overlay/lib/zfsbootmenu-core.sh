@@ -1045,7 +1045,7 @@ load_be_cmdline() {
     zdebug "using ${BASE}/cmdline as command line for ${fs}"
     kcl_assemble < "${BASE}/cmdline"
     return
-  elif [ -z "${ZBM_TARGET_KCL_OVERRIDE:-}${ZBM_TARGET_KCL_APPEND:-}${ZBM_TARGET_CONSOLE_ROTATE:-}${ZBM_TARGET_FBCON_MAP:-}" ] && validate_cmdline_cache "${cache}"; then
+  elif [ -z "${ZBM_TARGET_KCL_OVERRIDE:-}${ZBM_TARGET_KCL_APPEND:-}${ZBM_TARGET_CONSOLE_ROTATE:-}${ZBM_TARGET_CONSOLE_FONT:-}${ZBM_TARGET_FBCON_MAP:-}" ] && validate_cmdline_cache "${cache}"; then
     # Otherwise, if the BE has a valid KCL cache, just assemble that
     zdebug "using cached KCL from ${cache} as command line for ${fs}"
     kcl_assemble < "${cache}"
@@ -1097,6 +1097,10 @@ load_be_cmdline() {
 
   if [ -n "${ZBM_TARGET_CONSOLE_ROTATE:-}" ]; then
     adds+=( "fbcon=rotate:${ZBM_TARGET_CONSOLE_ROTATE}" )
+  fi
+
+  if [ -n "${ZBM_TARGET_CONSOLE_FONT:-}" ]; then
+    adds+=( "fbcon=font:${ZBM_TARGET_CONSOLE_FONT}" )
   fi
 
   if [ -n "${ZBM_TARGET_FBCON_MAP:-}" ]; then

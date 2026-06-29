@@ -111,6 +111,11 @@ environment with enough networking to let the owner finish the boot.
 Operational notes:
 
 - include the actual laptop Wi-Fi driver and firmware in the OpenWrt image
+- use `lspci` and `lsusb` inside OpenWrt to confirm the visible PCI and USB
+  adapters when debugging missing network devices
+- use `dmesg | grep -Ei 'iwlwifi|firmware|wlan|phy'`, `iw dev`, and `ip link`
+  to distinguish a missing firmware file from a wireless interface that exists
+  but is down or not associated yet
 - test the Wi-Fi path before leaving the laptop unattended
 - prefer SSH key access with `owrt.ssh_pubkey`
 - avoid putting long-term secrets into unprotected `kcl` unless the PCR policy

@@ -57,6 +57,20 @@ ifname_macaddr() {
   normalize_macaddr "${mac}"
 }
 
+unblock_wireless_rfkill() {
+  local rf type
+
+  for rf in /sys/class/rfkill/rfkill*; do
+    [ -e "${rf}" ] || continue
+    type="$(cat "${rf}/type" 2>/dev/null || true)"
+    case "${type}" in
+      wlan|wifi) ;;
+      *) continue ;;
+    esac
+    (printf '1' > "${rf}/state") 2>/dev/null || true
+  done
+}
+
 discover_ethernet_ifname_by_mac() {
   local want ifn mac
 
@@ -224,6 +238,80 @@ apply_console_rotate() {
   done
 
   printf '<6>%s\n' "[zbm-kcl-apply] console rotation=${rotation}" >/dev/kmsg 2>/dev/null || true
+}
+
+font_width() {
+  case "${1##*/}" in
+    ter-v32b.psf) printf '%s' 16 ;;
+    ter-v28b.psf) printf '%s' 14 ;;
+    ter-v24b.psf) printf '%s' 12 ;;
+    ter-v20b.psf) printf '%s' 10 ;;
+    ter-v14b.psf) printf '%s' 8 ;;
+    ter-v12n.psf) printf '%s' 6 ;;
+    *) return 1 ;;
+  esac
+}
+
+fb_width() {
+  local path value
+
+  for path in /sys/class/graphics/fb*/virtual_size; do
+    [ -r "${path}" ] || continue
+    value="$(cat "${path}" 2>/dev/null || true)"
+    value="${value%%,*}"
+    [ -n "${value}" ] || continue
+    printf '%s' "${value}"
+    return 0
+  done
+
+  return 1
+}
+
+set_console_font() {
+  local font
+
+  font="${1}"
+  [ -f "${font}" ] || return 1
+  [ -x /usr/bin/setfont ] || return 1
+  /usr/bin/setfont "${font}" >/dev/null 2>&1 || return 1
+  printf '<6>%s\n' "[zbm-kcl-apply] console font=${font##*/}" >/dev/kmsg 2>/dev/null || true
+}
+
+apply_console_font() {
+  local setting font dir width min_cols fw cols
+
+  setting="${1:-auto}"
+  setting="${setting,,}"
+  dir="/usr/share/zfsbootmenu/fonts"
+  min_cols=110
+
+  case "${setting}" in
+    ""|auto)
+      width="$(fb_width || true)"
+      for font in "${dir}/ter-v32b.psf" "${dir}/ter-v28b.psf" "${dir}/ter-v24b.psf" "${dir}/ter-v20b.psf" "${dir}/ter-v14b.psf" "${dir}/ter-v12n.psf"; do
+        [ -f "${font}" ] || continue
+        fw="$(font_width "${font}" || true)"
+        [ -n "${fw}" ] || continue
+        if [ -n "${width}" ]; then
+          cols=$((width / fw))
+          [ "${cols}" -lt "${min_cols}" ] && continue
+        fi
+        set_console_font "${font}" && return 0
+      done
+      set_console_font "${dir}/ter-v32b.psf" || true
+      ;;
+    largest|max|ter-v32b|ter-v32b.psf)
+      set_console_font "${dir}/ter-v32b.psf" || true
+      ;;
+    none|off|0|false|no)
+      ;;
+    /*)
+      set_console_font "${setting}" || true
+      ;;
+    *)
+      set_console_font "${dir}/${setting%.psf}.psf" || true
+      ;;
+  esac
 }
 
 read_efivar_payload() {
@@ -477,14 +565,20 @@ wifi_ifname="$(kget owrt.wifi_ifname || true)"
 wifi_phy="$(kget owrt.wifi_phy || true)"
 wifi_path="$(kget owrt.wifi_path || true)"
 wifi_encryption="$(kget owrt.wifi_encryption || true)"
+wifi_band="$(kget owrt.wifi_band || true)"
+wifi_channel="$(kget owrt.wifi_channel || true)"
+wifi_htmode="$(kget owrt.wifi_htmode || true)"
+wifi_country="$(kget owrt.wifi_country || true)"
 ssh_pubkey="$(kget owrt.ssh_pubkey || true)"
 root_hash="$(kget owrt.root_password_hash || true)"
 tty_login="$(kget owrt.ttylogin || true)"
 autostart="$(kget owrt.autostart || true)"
 console_rotate="$(kget owrt.console_rotate owrt.fbcon_rotate || true)"
+console_font="$(kget owrt.console_font owrt.fbcon_font || true)"
 target_kcl_append="$(kget owrt.target_kcl_append || true)"
 target_kcl_override="$(kget owrt.target_kcl_override || true)"
 target_console_rotate="$(kget owrt.target_console_rotate owrt.target_fbcon_rotate || true)"
+target_console_font="$(kget owrt.target_console_font owrt.target_fbcon_font || true)"
 target_fbcon_map="$(kget owrt.target_fbcon_map || true)"
 clevis_decrypt="$(kget clevis.decrypt owrt.clevis_decrypt || true)"
 clevis_store="$(kget clevis.store owrt.clevis_store || true)"
@@ -518,9 +612,13 @@ fi
 [ -n "${net_ifname}" ] || net_ifname=eth0
 [ -n "${wifi_device}" ] || wifi_device=radio0
 [ -n "${wifi_ifname}" ] || wifi_ifname=wlan0
+unblock_wireless_rfkill
 [ -n "${wifi_phy}" ] || wifi_phy="$(discover_wireless_phy || true)"
 [ -n "${wifi_path}" ] || wifi_path="$(wireless_phy_path "${wifi_phy}" || true)"
 [ -n "${wifi_encryption}" ] || wifi_encryption=psk2
+[ -n "${wifi_band}" ] || wifi_band=2g
+[ -n "${wifi_channel}" ] || wifi_channel=auto
+[ -n "${wifi_htmode}" ] || wifi_htmode=HT20
 [ -n "${clevis_decrypt}" ] || clevis_decrypt=yes
 [ -n "${clevis_pcr_ids}" ] || clevis_pcr_ids=1,4,5,7,9
 [ -n "${host_name}" ] || host_name=openwrt-zbm
@@ -539,11 +637,13 @@ fi
 ssh_pubkey="$(strip_wrapping_quotes "${ssh_pubkey}")"
 target_kcl_append="$(strip_wrapping_quotes "${target_kcl_append}")"
 target_kcl_override="$(strip_wrapping_quotes "${target_kcl_override}")"
+target_console_font="$(strip_wrapping_quotes "${target_console_font}")"
 if [ -n "${target_console_rotate}" ]; then
   target_console_rotate="$(normalize_console_rotate "${target_console_rotate}" || true)"
 fi
 
 apply_console_rotate "${console_rotate}"
+apply_console_font "${console_font:-auto}"
 set_root_hash "${root_hash}"
 append_unique_line "${ssh_pubkey}" /etc/dropbear/authorized_keys
 append_unique_line "${ssh_pubkey}" /root/.ssh/authorized_keys
@@ -593,10 +693,38 @@ config interface 'wwan'
 	option metric '20'
 CFG
 
+cat > /etc/config/dhcp <<CFG
+config dnsmasq
+	option domainneeded '1'
+	option boguspriv '1'
+	option localise_queries '1'
+	option rebind_protection '1'
+	option rebind_localhost '1'
+	option expandhosts '0'
+	option authoritative '0'
+	option readethers '1'
+	option leasefile '/tmp/dhcp.leases'
+	option resolvfile '/tmp/resolv.conf.d/resolv.conf.auto'
+	option nonwildcard '1'
+	option localservice '1'
+	option ednspacket_max '1232'
+
+config dhcp 'wan'
+	option interface 'wan'
+	option ignore '1'
+
+config dhcp 'wwan'
+	option interface 'wwan'
+	option ignore '1'
+CFG
+
 cat > /etc/config/wireless <<CFG
 config wifi-device '${wifi_device}'
 	option type 'mac80211'
 	option disabled '$([ -n "${wifi_ssid}" ] && printf 0 || printf 1)'
+	option band '${wifi_band}'
+	option channel '${wifi_channel}'
+	option htmode '${wifi_htmode}'
 CFG
 
 if [ -n "${wifi_path}" ]; then
@@ -604,6 +732,7 @@ if [ -n "${wifi_path}" ]; then
 elif [ -n "${wifi_phy}" ]; then
   printf "\toption phy '%s'\n" "${wifi_phy}" >> /etc/config/wireless
 fi
+[ -n "${wifi_country}" ] && printf "\toption country '%s'\n" "${wifi_country}" >> /etc/config/wireless
 
 cat >> /etc/config/wireless <<CFG
 
@@ -707,12 +836,18 @@ write_env_file /run/zbm-runtime/kcl.env \
   ZBM_WIFI_PHY "${wifi_phy}" \
   ZBM_WIFI_PATH "${wifi_path}" \
   ZBM_WIFI_ENCRYPTION "${wifi_encryption}" \
+  ZBM_WIFI_BAND "${wifi_band}" \
+  ZBM_WIFI_CHANNEL "${wifi_channel}" \
+  ZBM_WIFI_HTMODE "${wifi_htmode}" \
+  ZBM_WIFI_COUNTRY "${wifi_country}" \
   ZBM_SSH_PUBKEY "${ssh_pubkey}" \
   ZBM_ROOT_PASSWORD_HASH "${root_hash}" \
   ZBM_CONSOLE_ROTATE "${console_rotate}" \
+  ZBM_CONSOLE_FONT "${console_font:-auto}" \
   ZBM_TARGET_KCL_APPEND "${target_kcl_append}" \
   ZBM_TARGET_KCL_OVERRIDE "${target_kcl_override}" \
   ZBM_TARGET_CONSOLE_ROTATE "${target_console_rotate}" \
+  ZBM_TARGET_CONSOLE_FONT "${target_console_font}" \
   ZBM_TARGET_FBCON_MAP "${target_fbcon_map}" \
   ZBM_CLEVIS_DECRYPT "${clevis_decrypt}" \
   ZBM_CLEVIS_STORE "${clevis_store}" \

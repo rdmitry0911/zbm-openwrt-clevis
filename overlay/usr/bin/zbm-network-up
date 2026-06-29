@@ -58,6 +58,25 @@ ifname_macaddr() {
   normalize_macaddr "${mac}"
 }
 
+unblock_wireless_rfkill() {
+  local rf type changed
+
+  changed=0
+  for rf in /sys/class/rfkill/rfkill*; do
+    [ -e "${rf}" ] || continue
+    type="$(cat "${rf}/type" 2>/dev/null || true)"
+    case "${type}" in
+      wlan|wifi) ;;
+      *) continue ;;
+    esac
+    if (printf '1' > "${rf}/state") 2>/dev/null; then
+      changed=1
+    fi
+  done
+
+  [ "${changed}" = "0" ] || log_network "unblocked wireless rfkill state"
+}
+
 discover_ethernet_ifname_by_mac() {
   local want ifn mac
 
@@ -150,8 +169,60 @@ wireless_phy_path() {
   printf '%s' "${devpath}"
 }
 
+wireless_phy_matches_path() {
+  local phy want have want_base have_base
+
+  phy="${1}"
+  want="${2}"
+  [ -n "${phy}" ] && [ -n "${want}" ] || return 1
+
+  have="$(wireless_phy_path "${phy}" || true)"
+  [ -n "${have}" ] || return 1
+  [ "${have}" = "${want}" ] && return 0
+
+  want_base="${want%%+*}"
+  have_base="${have%%+*}"
+  [ "${have_base}" = "${want_base}" ] && return 0
+
+  case "${have_base}" in
+    *"${want_base}") return 0 ;;
+  esac
+
+  return 1
+}
+
+discover_wireless_phy_by_path() {
+  local want phy
+
+  want="${1}"
+  [ -n "${want}" ] || return 1
+
+  for phy in /sys/class/ieee80211/*; do
+    [ -e "${phy}" ] || continue
+    phy="${phy##*/}"
+    wireless_phy_matches_path "${phy}" "${want}" || continue
+    printf '%s\n' "${phy}"
+    return 0
+  done
+
+  return 1
+}
+
 wireless_hardware_present() {
   [ -n "$(discover_wireless_phy || true)" ] || [ -n "$(discover_wireless_ifname || true)" ]
+}
+
+wait_wireless_hardware() {
+  local tries
+
+  tries="${1:-15}"
+  while [ "${tries}" -gt 0 ]; do
+    wireless_hardware_present && return 0
+    sleep 1
+    tries=$((tries - 1))
+  done
+
+  return 1
 }
 
 uci_get() {
@@ -177,6 +248,139 @@ uci_delete() {
 uci_commit() {
   command -v uci >/dev/null 2>&1 || return 0
   uci -q commit "$1" >/dev/null 2>&1 || true
+}
+
+configured_wwan_ifname() {
+  local device ifn
+
+  ifn="${ZBM_WWAN_IFNAME:-${ZBM_WIFI_IFNAME:-}}"
+  if [ -z "${ifn}" ]; then
+    device="${ZBM_WIFI_DEVICE:-radio0}"
+    ifn="$(uci_get "wireless.default_${device}.ifname" || true)"
+  fi
+  [ -n "${ifn}" ] || ifn=wlan0
+  printf '%s' "${ifn}"
+}
+
+resolve_wifi_phy() {
+  local device phy path
+
+  device="${ZBM_WIFI_DEVICE:-radio0}"
+  phy="${ZBM_WIFI_PHY:-}"
+  [ -n "${phy}" ] || phy="$(uci_get "wireless.${device}.phy" || true)"
+  if [ -n "${phy}" ] && [ -d "/sys/class/ieee80211/${phy}" ]; then
+    printf '%s' "${phy}"
+    return 0
+  fi
+
+  path="${ZBM_WIFI_PATH:-}"
+  [ -n "${path}" ] || path="$(uci_get "wireless.${device}.path" || true)"
+  if [ -n "${path}" ]; then
+    phy="$(discover_wireless_phy_by_path "${path}" || true)"
+    if [ -n "${phy}" ]; then
+      printf '%s' "${phy}"
+      return 0
+    fi
+  fi
+
+  discover_wireless_phy
+}
+
+wpa_quote() {
+  local value
+
+  value="${1//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "${value}"
+}
+
+write_manual_wpa_config() {
+  local file encryption
+
+  file="${1}"
+  encryption="${ZBM_WIFI_ENCRYPTION:-psk2}"
+  mkdir -p /var/run/wpa_supplicant
+  {
+    printf 'ctrl_interface=/var/run/wpa_supplicant\n'
+    printf 'update_config=0\n'
+    [ -z "${ZBM_WIFI_COUNTRY:-}" ] || printf 'country=%s\n' "${ZBM_WIFI_COUNTRY}"
+    printf 'network={\n'
+    printf '\tssid=%s\n' "$(wpa_quote "${ZBM_WIFI_SSID:-}")"
+    printf '\tscan_ssid=1\n'
+    case "${encryption}" in
+      none|open)
+        printf '\tkey_mgmt=NONE\n'
+        ;;
+      *)
+        printf '\tkey_mgmt=WPA-PSK\n'
+        printf '\tpsk=%s\n' "$(wpa_quote "${ZBM_WIFI_PSK:-}")"
+        ;;
+    esac
+    printf '}\n'
+  } > "${file}"
+  chmod 0600 "${file}"
+}
+
+ensure_wifi_netdev() {
+  local ifn phy
+
+  [ -n "${ZBM_WIFI_SSID:-}" ] || return 0
+  ifn="$(configured_wwan_ifname)"
+  iface_exists "${ifn}" && return 0
+
+  phy="$(resolve_wifi_phy || true)"
+  if [ -z "${phy}" ]; then
+    log_network "wifi fallback could not find a phy for ${ifn}"
+    return 1
+  fi
+
+  if iw phy "${phy}" interface add "${ifn}" type managed >/dev/null 2>&1; then
+    log_network "created wifi STA interface ${ifn} on ${phy}"
+    ip link set "${ifn}" up 2>/dev/null || true
+    uci_set network.wwan.device "${ifn}"
+    uci_commit network
+    return 0
+  fi
+
+  log_network "wifi fallback failed to create ${ifn} on ${phy}"
+  return 1
+}
+
+start_manual_wifi_sta() {
+  local ifn conf pidfile pid
+
+  [ -n "${ZBM_WIFI_SSID:-}" ] || return 0
+  ifn="$(configured_wwan_ifname)"
+  iface_exists "${ifn}" || ensure_wifi_netdev || return 1
+  iface_exists "${ifn}" || return 1
+
+  ip link set "${ifn}" up 2>/dev/null || true
+  uci_set network.wwan.device "${ifn}"
+  uci_commit network
+
+  [ -x /usr/sbin/wpa_supplicant ] || return 1
+  conf="/tmp/zbm-wpa_supplicant-${ifn}.conf"
+  pidfile="/var/run/zbm-wpa_supplicant-${ifn}.pid"
+  pid="$(cat "${pidfile}" 2>/dev/null || true)"
+  if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+    return 0
+  fi
+
+  write_manual_wpa_config "${conf}"
+  rm -f "/var/run/wpa_supplicant/${ifn}" "${pidfile}"
+  if wpa_supplicant -B -P "${pidfile}" -D nl80211 -i "${ifn}" -c "${conf}" \
+      >/tmp/zbm-wpa-supplicant.log 2>&1; then
+    log_network "started manual wpa_supplicant on ${ifn}"
+    return 0
+  fi
+
+  log_network "manual wpa_supplicant failed on ${ifn}"
+  return 1
+}
+
+start_wpad_service() {
+  [ -x /etc/init.d/wpad ] || return 0
+  /etc/init.d/wpad start >/dev/null 2>&1 || true
 }
 
 ip4_for_ifname() {
@@ -405,6 +609,11 @@ refresh_mwan3_tracking() {
 }
 
 ensure_wan_device_config
+unblock_wireless_rfkill
+if [ -n "${ZBM_WIFI_SSID:-}" ]; then
+  wait_wireless_hardware 15 || log_network "wifi hardware did not appear before network setup"
+  start_wpad_service
+fi
 ensure_wireless_device_config
 bring_link_up "$(resolve_wan_ifname || true)"
 
@@ -421,6 +630,10 @@ if [ -n "${ZBM_WIFI_SSID:-}" ]; then
     wifi up >/dev/null 2>&1 || true
   fi
   ifup wwan >/dev/null 2>&1 || true
+  if [ -z "$(resolve_wwan_ifname || true)" ]; then
+    start_manual_wifi_sta || true
+    ifup wwan >/dev/null 2>&1 || true
+  fi
 fi
 
 if [ -x /etc/init.d/mwan3 ]; then
@@ -429,7 +642,11 @@ fi
 
 if wait_network_ready 30; then
   if [ -n "${ZBM_WIFI_SSID:-}" ] && wireless_hardware_present; then
-    wait_wwan_ready 25 || true
+    if ! wait_wwan_ready 25; then
+      start_manual_wifi_sta || true
+      ifup wwan >/dev/null 2>&1 || true
+      wait_wwan_ready 10 || true
+    fi
   fi
   if [ -x /etc/init.d/firewall ]; then
     /etc/init.d/firewall reload >/dev/null 2>&1 ||
