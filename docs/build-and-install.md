@@ -71,6 +71,9 @@ The UKI contains:
 - embedded initramfs
 - empty built-in cmdline
 - OpenWrt OS release metadata
+- recovery networking and repair tools, including `apk`, `tcpdump`, `ip`,
+  `ss`, `conntrack`, `ethtool`, `iperf3`, `mtr`, `dig`, `nc`, `socat`,
+  `arping`, `tracepath`, and `ping`
 
 Operational policy is therefore carried by `rEFInd` options.
 

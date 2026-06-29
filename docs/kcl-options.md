@@ -358,7 +358,8 @@ both `wan` and `wwan`.
 When both uplinks have IPv4 addresses, `zbm-network-up` also installs
 source-based routing rules for the local OpenWrt runtime. This keeps SSH
 replies sourced from the Wi-Fi address on `wwan` going back out through Wi-Fi
-instead of following the primary Ethernet default route.
+instead of following the primary Ethernet default route. No multi-WAN daemon is
+required for this recovery behavior.
 
 ### `owrt.net_ipaddr`
 

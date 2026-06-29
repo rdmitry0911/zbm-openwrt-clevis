@@ -632,7 +632,6 @@ install_repo_overlay() {
   install -m 0755 "${TOPDIR}/hooks/load_key_zfs_clevis_hook.sh" \
     "${FILES_DIR}/libexec/load_key.d/10-clevis-tpm2"
   ln -snf ../init.d/zbm-kcl-setup "${FILES_DIR}/etc/rc.d/S19zbm-kcl-setup"
-  ln -snf ../init.d/mwan3 "${FILES_DIR}/etc/rc.d/S90mwan3"
 }
 
 prepare_files_overlay() {
@@ -656,18 +655,32 @@ sanitize_package_name() {
 imagebuilder_packages() {
   {
     sanitize_package_name < "${WORLD_REF}" \
-      | grep -Ev '^(base-files|kernel|libc|fzf|mawk|tpm2|tpm2-tools|kmod-tpm-crb)$' \
+      | grep -Ev '^(base-files|kernel|libc|fzf|mawk|tpm2|tpm2-tools|kmod-tpm-crb|mwan3)$' \
       | grep -Ev '^(i915-firmware-dmc|kmod-acpi-video|kmod-backlight|kmod-dma-buf|kmod-drm.*)$' \
       | grep -Ev '(amdgpu|i915|nouveau|nvidia)'
     printf '%s\n' \
+      apk-mbedtls \
       bash \
+      bind-dig \
       blkid \
+      conntrack \
       cryptsetup \
+      ethtool \
+      ip-full \
+      iperf3 \
+      iputils-arping \
+      iputils-ping \
+      iputils-tracepath \
       jose \
       jq \
       libatomic \
       libtirpc \
+      mtr-nojson \
+      netcat \
       pciutils \
+      socat \
+      ss \
+      tcpdump \
       usbutils \
       -i915-firmware-dmc \
       -kmod-acpi-video \
@@ -769,14 +782,26 @@ validate_rootfs() {
     "/usr/bin/fzf" \
     "/usr/bin/jose" \
     "/usr/bin/jq" \
+    "/usr/bin/apk" \
     "/usr/bin/lspci" \
     "/usr/bin/lsusb" \
+    "/usr/bin/tcpdump" \
     "/usr/bin/setfont" \
+    "/usr/sbin/ss" \
+    "/usr/bin/socat" \
+    "/usr/bin/nc" \
+    "/usr/bin/iperf3" \
+    "/usr/sbin/mtr" \
+    "/usr/bin/dig" \
+    "/usr/bin/arping" \
+    "/usr/bin/tracepath" \
+    "/usr/bin/ping" \
+    "/sbin/ip" \
+    "/usr/sbin/ethtool" \
+    "/usr/sbin/conntrack" \
     "/usr/sbin/blkid" \
     "/usr/sbin/wpad" \
     "/usr/sbin/wpa_supplicant" \
-    "/etc/init.d/mwan3" \
-    "/usr/sbin/mwan3" \
     "/usr/sbin/kexec" \
     "/usr/sbin/zfs" \
     "/usr/sbin/zpool" \

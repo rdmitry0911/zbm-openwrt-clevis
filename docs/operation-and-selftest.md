@@ -33,7 +33,9 @@ available for the manual path. The recovery image exposes only uplink
 interfaces (`wan` and optional `wwan`), not a `lan` bridge.
 For local services such as SSH, it installs per-uplink source routes so replies
 to connections made to the `wwan` address leave through `wwan` instead of the
-primary Ethernet route.
+primary Ethernet route. This does not depend on `mwan3`; the recovery runtime
+uses plain OpenWrt interfaces plus explicit source-based routing for its own
+local services.
 
 `owrt.autostart=y` is only a fallback convenience after this automatic pass has
 failed. It does not bypass login, and it calls `zbm-start` only when

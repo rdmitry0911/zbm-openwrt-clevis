@@ -126,7 +126,7 @@ write_openwrt_config() {
 	      'CONFIG_DEVEL=y'
 
     sanitize_package_name < "${WORLD_REF}" \
-      | grep -Ev '^(base-files|kernel|libc)$' \
+      | grep -Ev '^(base-files|kernel|libc|mwan3)$' \
       | sort -u \
       | while read -r pkg; do
           printf 'CONFIG_PACKAGE_%s=y\n' "${pkg}"
@@ -483,7 +483,6 @@ install_repo_overlay() {
   install -m 0755 "${TOPDIR}/hooks/load_key_zfs_clevis_hook.sh" \
     "${files}/libexec/load_key.d/10-clevis-tpm2"
   ln -snf ../init.d/zbm-kcl-setup "${files}/etc/rc.d/S19zbm-kcl-setup"
-  ln -snf ../init.d/mwan3 "${files}/etc/rc.d/S90mwan3"
 }
 
 prepare_runtime_overlay() {
@@ -531,11 +530,23 @@ validate_rootfs() {
     "/usr/bin/clevis-encrypt-tpm2" \
     "/usr/bin/tpm2" \
     "/usr/bin/fzf" \
+    "/usr/bin/apk" \
+    "/usr/bin/tcpdump" \
+    "/usr/bin/socat" \
+    "/usr/bin/nc" \
+    "/usr/bin/iperf3" \
+    "/usr/bin/dig" \
+    "/usr/bin/arping" \
+    "/usr/bin/tracepath" \
+    "/usr/bin/ping" \
+    "/sbin/ip" \
+    "/usr/sbin/ss" \
+    "/usr/sbin/conntrack" \
+    "/usr/sbin/ethtool" \
+    "/usr/sbin/mtr" \
     "/usr/sbin/blkid" \
     "/usr/sbin/wpad" \
     "/usr/sbin/wpa_supplicant" \
-    "/etc/init.d/mwan3" \
-    "/usr/sbin/mwan3" \
     "/usr/sbin/zfs" \
     "/usr/sbin/zpool" \
     "/lib/modules/${krel}/cfg80211.ko" \

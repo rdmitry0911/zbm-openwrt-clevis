@@ -1,9 +1,11 @@
 apk-mbedtls
 base-files=1~f505120278
 bash
+bind-dig
 bnx2-firmware
 busybox
 ca-bundle
+conntrack
 cryptsetup
 dnsmasq
 dosfstools
@@ -11,6 +13,7 @@ dropbear
 e2fsprogs
 efibootmgr
 efivar
+ethtool
 firewall4
 fstools
 fwtool
@@ -22,6 +25,11 @@ grub2-efi
 gummiboot
 hostapd-common
 i915-firmware-dmc
+ip-full
+iperf3
+iputils-arping
+iputils-ping
+iputils-tracepath
 iw
 iwlwifi-firmware-ax101
 iwlwifi-firmware-ax200
@@ -110,8 +118,8 @@ kmod-iwlwifi
 kmod-ixgbe
 kmod-keys-encrypted
 kmod-keys-trusted
-kmod-lib-crc32c
 kmod-lib-crc-ccitt
+kmod-lib-crc32c
 kmod-libphy
 kmod-mac80211
 kmod-mdio
@@ -124,9 +132,9 @@ kmod-nf-flow
 kmod-nf-log
 kmod-nf-log6
 kmod-nf-nat
-kmod-nfnetlink
 kmod-nf-reject
 kmod-nf-reject6
+kmod-nfnetlink
 kmod-nft-core
 kmod-nft-fib
 kmod-nft-nat
@@ -138,8 +146,8 @@ kmod-nls-utf8
 kmod-nvme
 kmod-pcs-xpcs
 kmod-phy-ax88796b
-kmod-phylink
 kmod-phy-realtek
+kmod-phylink
 kmod-ppp
 kmod-pppoe
 kmod-pppox
@@ -208,8 +216,9 @@ lvm2
 mc
 mkf2fs
 mtd
-mwan3
+mtr-nojson
 nano-plus
+netcat
 netifd
 nftables-json
 odhcp6c
@@ -224,6 +233,9 @@ procd-seccomp
 procd-ujail
 r8152-firmware
 r8169-firmware
+socat
+ss
+tcpdump
 terminfo
 ubox
 ubus

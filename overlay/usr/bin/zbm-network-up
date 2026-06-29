@@ -654,31 +654,6 @@ wait_wwan_ready() {
   return 1
 }
 
-refresh_mwan3_interface_tracking() {
-  local section ifn gw
-
-  section="${1}"
-  ifn="${2}"
-  [ -n "${section}" ] || return 0
-
-  uci_delete "mwan3.${section}.track_ip"
-  gw="$(default_gateway_for_ifname "${ifn}" || true)"
-  [ -n "${gw}" ] && uci_add_list "mwan3.${section}.track_ip" "${gw}"
-  uci_add_list "mwan3.${section}.track_ip" "1.1.1.1"
-  uci_add_list "mwan3.${section}.track_ip" "8.8.8.8"
-}
-
-refresh_mwan3_tracking() {
-  local wan_if wwan_if
-
-  wan_if="$(resolve_wan_ifname || true)"
-  wwan_if="$(resolve_wwan_ifname || true)"
-
-  refresh_mwan3_interface_tracking wan "${wan_if}"
-  refresh_mwan3_interface_tracking wwan "${wwan_if}"
-  uci_commit mwan3
-}
-
 ensure_wan_device_config
 unblock_wireless_rfkill
 if [ -n "${ZBM_WIFI_SSID:-}" ]; then
@@ -707,10 +682,6 @@ if [ -n "${ZBM_WIFI_SSID:-}" ]; then
   fi
 fi
 
-if [ -x /etc/init.d/mwan3 ]; then
-  /etc/init.d/mwan3 enable >/dev/null 2>&1 || true
-fi
-
 if wait_network_ready 30; then
   if [ -n "${ZBM_WIFI_SSID:-}" ] && wireless_hardware_present; then
     if ! wait_wwan_ready 25; then
@@ -723,10 +694,6 @@ if wait_network_ready 30; then
     /etc/init.d/firewall reload >/dev/null 2>&1 ||
       /etc/init.d/firewall restart >/dev/null 2>&1 ||
       /etc/init.d/firewall start >/dev/null 2>&1 || true
-  fi
-  if [ -x /etc/init.d/mwan3 ]; then
-    refresh_mwan3_tracking
-    /etc/init.d/mwan3 restart >/dev/null 2>&1 || true
   fi
   install_uplink_source_routes
   log_network "network ready: $(uplink_status)"

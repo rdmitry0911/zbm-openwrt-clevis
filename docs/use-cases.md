@@ -116,6 +116,9 @@ Operational notes:
 - use `dmesg | grep -Ei 'iwlwifi|firmware|wlan|phy'`, `iw dev`, and `ip link`
   to distinguish a missing firmware file from a wireless interface that exists
   but is down or not associated yet
+- use the bundled repair tools (`tcpdump`, `ip`, `ss`, `conntrack`, `ethtool`,
+  `iperf3`, `mtr`, `dig`, `nc`, `socat`, `arping`, `tracepath`, `ping`, `apk`)
+  for network triage from the OpenWrt recovery runtime
 - test the Wi-Fi path before leaving the laptop unattended
 - prefer SSH key access with `owrt.ssh_pubkey`
 - avoid putting long-term secrets into unprotected `kcl` unless the PCR policy
