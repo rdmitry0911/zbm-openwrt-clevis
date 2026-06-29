@@ -554,13 +554,17 @@ install_source_route_for_ifname() {
   pref="${4}"
 
   [ -n "${ifn}" ] || return 0
-  delete_ip_rule_pref "${pref}"
-  ip -4 route flush table "${table}" >/dev/null 2>&1 || true
   iface_exists "${ifn}" || return 0
 
   ip_prefix="$(ip4_prefix_for_ifname "${ifn}" || true)"
-  [ -n "${ip_prefix}" ] || return 0
+  if [ -z "${ip_prefix}" ]; then
+    log_network "skipping ${label} source route for ${ifn}: no IPv4 address yet"
+    return 1
+  fi
   ip_addr="${ip_prefix%%/*}"
+
+  delete_ip_rule_pref "${pref}"
+  ip -4 route flush table "${table}" >/dev/null 2>&1 || true
 
   ip -4 route show table main dev "${ifn}" 2>/dev/null | while IFS= read -r route_line; do
     [ -n "${route_line}" ] || continue
@@ -577,8 +581,10 @@ install_source_route_for_ifname() {
 
   if ip -4 rule add pref "${pref}" from "${ip_addr}/32" lookup "${table}" >/dev/null 2>&1; then
     log_network "installed ${label} source route for ${ip_addr} via ${ifn} table ${table}"
+    return 0
   else
     log_network "failed to install ${label} source route for ${ip_addr} via ${ifn}"
+    return 1
   fi
 }
 
@@ -588,8 +594,9 @@ install_uplink_source_routes() {
   wan_if="$(resolve_wan_ifname || true)"
   wwan_if="$(resolve_wwan_ifname || true)"
 
-  install_source_route_for_ifname wan "${wan_if}" 10010 900
-  install_source_route_for_ifname wwan "${wwan_if}" 10020 901
+  install_source_route_for_ifname wan "${wan_if}" 10010 900 || true
+  install_source_route_for_ifname wwan "${wwan_if}" 10020 901 || true
+  ip -4 route flush cache >/dev/null 2>&1 || true
 }
 
 uplink_status() {
@@ -653,6 +660,17 @@ wait_wwan_ready() {
 
   return 1
 }
+
+run_routes_only() {
+  install_uplink_source_routes >/tmp/zbm-source-routes.log 2>&1 || true
+}
+
+case "${1:-}" in
+  --routes-only)
+    run_routes_only
+    exit 0
+    ;;
+esac
 
 ensure_wan_device_config
 unblock_wireless_rfkill

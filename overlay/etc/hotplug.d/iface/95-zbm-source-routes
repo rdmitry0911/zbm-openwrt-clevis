@@ -1,0 +1,14 @@
+#!/bin/sh
+
+case "${ACTION:-}" in
+  ifup|ifupdate) ;;
+  *) exit 0 ;;
+esac
+
+case "${INTERFACE:-}" in
+  wan|wwan) ;;
+  *) exit 0 ;;
+esac
+
+[ -x /usr/bin/zbm-network-up ] || exit 0
+/usr/bin/zbm-network-up --routes-only >/tmp/zbm-source-routes-${INTERFACE}.log 2>&1 &

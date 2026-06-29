@@ -772,6 +772,8 @@ validate_rootfs() {
     "/etc/profile.d/zbm-autostart.sh" \
     "/usr/bin/zbm-kcl-apply" \
     "/usr/bin/zbm-auto-boot" \
+    "/usr/bin/zbm-network-up" \
+    "/etc/hotplug.d/iface/95-zbm-source-routes" \
     "/usr/bin/tput" \
     "/usr/bin/stty" \
     "/usr/bin/udevadm" \

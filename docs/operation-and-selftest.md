@@ -35,7 +35,9 @@ For local services such as SSH, it installs per-uplink source routes so replies
 to connections made to the `wwan` address leave through `wwan` instead of the
 primary Ethernet route. This does not depend on `mwan3`; the recovery runtime
 uses plain OpenWrt interfaces plus explicit source-based routing for its own
-local services.
+local services. A hotplug hook refreshes those routes on `wan`/`wwan`
+`ifup`/`ifupdate` events, which covers DHCP renewals and Wi-Fi links that come
+up after the first boot-time network pass.
 
 `owrt.autostart=y` is only a fallback convenience after this automatic pass has
 failed. It does not bypass login, and it calls `zbm-start` only when

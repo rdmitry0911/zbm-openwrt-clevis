@@ -525,6 +525,8 @@ validate_rootfs() {
     "/etc/profile.d/zbm-autostart.sh" \
     "/usr/bin/zbm-kcl-apply" \
     "/usr/bin/zbm-auto-boot" \
+    "/usr/bin/zbm-network-up" \
+    "/etc/hotplug.d/iface/95-zbm-source-routes" \
     "/usr/bin/clevis" \
     "/usr/bin/clevis-decrypt-tpm2" \
     "/usr/bin/clevis-encrypt-tpm2" \
