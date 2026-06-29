@@ -521,6 +521,77 @@ default_gateway_for_ifname() {
   '
 }
 
+ip4_prefix_for_ifname() {
+  local ifn
+
+  ifn="${1}"
+  [ -n "${ifn}" ] || return 1
+  iface_exists "${ifn}" || return 1
+  ip -o -4 addr show dev "${ifn}" scope global 2>/dev/null | awk '
+    {
+      print $4
+      exit
+    }
+  '
+}
+
+delete_ip_rule_pref() {
+  local pref
+
+  pref="${1}"
+  [ -n "${pref}" ] || return 0
+  while ip -4 rule del pref "${pref}" >/dev/null 2>&1; do
+    :
+  done
+}
+
+install_source_route_for_ifname() {
+  local label ifn table pref ip_prefix ip_addr gw route_line
+
+  label="${1}"
+  ifn="${2}"
+  table="${3}"
+  pref="${4}"
+
+  [ -n "${ifn}" ] || return 0
+  delete_ip_rule_pref "${pref}"
+  ip -4 route flush table "${table}" >/dev/null 2>&1 || true
+  iface_exists "${ifn}" || return 0
+
+  ip_prefix="$(ip4_prefix_for_ifname "${ifn}" || true)"
+  [ -n "${ip_prefix}" ] || return 0
+  ip_addr="${ip_prefix%%/*}"
+
+  ip -4 route show table main dev "${ifn}" 2>/dev/null | while IFS= read -r route_line; do
+    [ -n "${route_line}" ] || continue
+    case "${route_line}" in
+      default*) continue ;;
+    esac
+    ip -4 route replace table "${table}" ${route_line} >/dev/null 2>&1 || true
+  done
+
+  gw="$(default_gateway_for_ifname "${ifn}" || true)"
+  if [ -n "${gw}" ]; then
+    ip -4 route replace table "${table}" default via "${gw}" dev "${ifn}" src "${ip_addr}" >/dev/null 2>&1 || true
+  fi
+
+  if ip -4 rule add pref "${pref}" from "${ip_addr}/32" lookup "${table}" >/dev/null 2>&1; then
+    log_network "installed ${label} source route for ${ip_addr} via ${ifn} table ${table}"
+  else
+    log_network "failed to install ${label} source route for ${ip_addr} via ${ifn}"
+  fi
+}
+
+install_uplink_source_routes() {
+  local wan_if wwan_if
+
+  wan_if="$(resolve_wan_ifname || true)"
+  wwan_if="$(resolve_wwan_ifname || true)"
+
+  install_source_route_for_ifname wan "${wan_if}" 10010 900
+  install_source_route_for_ifname wwan "${wwan_if}" 10020 901
+}
+
 uplink_status() {
   local wan_if wwan_if wan_ip wwan_ip
 
@@ -657,6 +728,7 @@ if wait_network_ready 30; then
     refresh_mwan3_tracking
     /etc/init.d/mwan3 restart >/dev/null 2>&1 || true
   fi
+  install_uplink_source_routes
   log_network "network ready: $(uplink_status)"
   exit 0
 fi

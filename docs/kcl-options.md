@@ -355,6 +355,11 @@ The recovery image does not expose a `lan` interface or `br-lan` bridge. A
 single wired adapter is still treated as `wan`; DHCP service is disabled on
 both `wan` and `wwan`.
 
+When both uplinks have IPv4 addresses, `zbm-network-up` also installs
+source-based routing rules for the local OpenWrt runtime. This keeps SSH
+replies sourced from the Wi-Fi address on `wwan` going back out through Wi-Fi
+instead of following the primary Ethernet default route.
+
 ### `owrt.net_ipaddr`
 
 - Default: empty
