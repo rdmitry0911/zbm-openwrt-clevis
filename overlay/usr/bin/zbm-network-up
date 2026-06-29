@@ -302,7 +302,6 @@ write_manual_wpa_config() {
   mkdir -p /var/run/wpa_supplicant
   {
     printf 'ctrl_interface=/var/run/wpa_supplicant\n'
-    printf 'update_config=0\n'
     [ -z "${ZBM_WIFI_COUNTRY:-}" ] || printf 'country=%s\n' "${ZBM_WIFI_COUNTRY}"
     printf 'network={\n'
     printf '\tssid=%s\n' "$(wpa_quote "${ZBM_WIFI_SSID:-}")"
@@ -546,7 +545,7 @@ delete_ip_rule_pref() {
 }
 
 install_source_route_for_ifname() {
-  local label ifn table pref ip_prefix ip_addr gw route_line
+  local label ifn table pref ip_prefix ip_addr gw route_line route_cmd
 
   label="${1}"
   ifn="${2}"
@@ -571,7 +570,12 @@ install_source_route_for_ifname() {
     case "${route_line}" in
       default*) continue ;;
     esac
-    ip -4 route replace table "${table}" ${route_line} >/dev/null 2>&1 || true
+    route_cmd="${route_line}"
+    case " ${route_cmd} " in
+      *" dev "*) ;;
+      *) route_cmd="${route_cmd} dev ${ifn}" ;;
+    esac
+    ip -4 route replace table "${table}" ${route_cmd} >/dev/null 2>&1 || true
   done
 
   gw="$(default_gateway_for_ifname "${ifn}" || true)"
@@ -646,6 +650,25 @@ wwan_ready() {
   [ -n "$(ip4_for_ifname "${wwan_if}" || true)" ]
 }
 
+wwan_netdev_present() {
+  [ -n "$(resolve_wwan_ifname || true)" ]
+}
+
+wait_wwan_netdev() {
+  local tries
+
+  tries="${1:-10}"
+  while [ "${tries}" -gt 0 ]; do
+    if wwan_netdev_present; then
+      return 0
+    fi
+    sleep 1
+    tries=$((tries - 1))
+  done
+
+  return 1
+}
+
 wait_wwan_ready() {
   local tries
 
@@ -694,7 +717,7 @@ if [ -n "${ZBM_WIFI_SSID:-}" ]; then
     wifi up >/dev/null 2>&1 || true
   fi
   ifup wwan >/dev/null 2>&1 || true
-  if [ -z "$(resolve_wwan_ifname || true)" ]; then
+  if ! wait_wwan_netdev 10; then
     start_manual_wifi_sta || true
     ifup wwan >/dev/null 2>&1 || true
   fi
