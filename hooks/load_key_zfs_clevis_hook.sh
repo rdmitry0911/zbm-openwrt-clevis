@@ -290,34 +290,89 @@ detect_host_name()
   printf '%s' "${host:-unknown-host}"
 }
 
-discover_ifname()
+ignored_ifname()
+{
+  case "${1}" in
+    lo|br-*|ifb*|sit*|tun*|tap*|veth*|docker*|virbr*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+is_wireless_ifname()
+{
+  local ifn
+
+  ifn="${1}"
+  [ -d "/sys/class/net/${ifn}/wireless" ] && return 0
+  [ -e "/sys/class/net/${ifn}/phy80211" ] && return 0
+  return 1
+}
+
+discover_ethernet_ifname()
 {
   local ifn
 
   for ifn in /sys/class/net/*; do
     ifn="${ifn##*/}"
-    [ "${ifn}" = "lo" ] && continue
+    ignored_ifname "${ifn}" && continue
+    is_wireless_ifname "${ifn}" && continue
+    [ -e "/sys/class/net/${ifn}/device" ] || continue
     printf '%s\n' "${ifn}"
     return 0
   done
+
   return 1
+}
+
+discover_wireless_ifname()
+{
+  local ifn
+
+  for ifn in /sys/class/net/*; do
+    ifn="${ifn##*/}"
+    ignored_ifname "${ifn}" && continue
+    is_wireless_ifname "${ifn}" || continue
+    printf '%s\n' "${ifn}"
+    return 0
+  done
+
+  return 1
+}
+
+discover_ifname()
+{
+  discover_ethernet_ifname || discover_wireless_ifname
+}
+
+ip_for_ifname()
+{
+  local ifn
+
+  ifn="${1}"
+  [ -n "${ifn}" ] || return 1
+  if command -v ip >/dev/null 2>&1; then
+    ip -o -4 addr show dev "${ifn}" scope global 2>/dev/null | awk '
+      {
+        split($4, a, "/")
+        print a[1]
+        exit
+      }
+    '
+  fi
 }
 
 detect_primary_ip()
 {
   local ip target_if
 
-  target_if="${ZBM_NET_IFNAME:-}"
+  target_if="${ZBM_WAN_IFNAME:-${ZBM_NET_IFNAME:-}}"
   [ -n "${target_if}" ] || target_if="$(discover_ifname || true)"
   if command -v ip >/dev/null 2>&1; then
     if [ -n "${target_if}" ]; then
-      ip="$(ip -o -4 addr show dev "${target_if}" scope global 2>/dev/null | awk '
-        {
-          split($4, a, "/")
-          print a[1]
-          exit
-        }
-      ')"
+      ip="$(ip_for_ifname "${target_if}" || true)"
     fi
     if [ -z "${ip:-}" ]; then
       ip="$(ip -o -4 addr show up scope global 2>/dev/null | awk '
@@ -345,8 +400,33 @@ detect_primary_ip()
   printf '%s' "${ip:-unknown-ip}"
 }
 
+network_status_summary()
+{
+  local wan_if wwan_if wan_ip wwan_ip
+
+  wan_if="${ZBM_WAN_IFNAME:-${ZBM_NET_IFNAME:-}}"
+  if [ -z "${wan_if}" ] || [ ! -e "/sys/class/net/${wan_if}" ]; then
+    wan_if="$(discover_ethernet_ifname || true)"
+  fi
+
+  wwan_if="${ZBM_WWAN_IFNAME:-${ZBM_WIFI_IFNAME:-}}"
+  if [ -z "${wwan_if}" ] || [ ! -e "/sys/class/net/${wwan_if}" ]; then
+    wwan_if="$(discover_wireless_ifname || true)"
+  fi
+
+  wan_ip="$(ip_for_ifname "${wan_if}" || true)"
+  wwan_ip="$(ip_for_ifname "${wwan_if}" || true)"
+
+  printf 'wan(%s)=%s wwan(%s)=%s' \
+    "${wan_if:-absent}" "${wan_ip:-down}" \
+    "${wwan_if:-absent}" "${wwan_ip:-down}"
+}
+
 apply_runtime_network_for_notify()
 {
+  [ "${ZBM_NOTIFY_NETWORK_APPLIED:-0}" = "1" ] && return 0
+  ZBM_NOTIFY_NETWORK_APPLIED=1
+
   if [ -x /usr/bin/zbm-network-up ]; then
     if /usr/bin/zbm-network-up >>"${CLEVIS_HOOK_LOG}" 2>&1; then
       log_hook notice "telegram notify: runtime network reapplied from kcl"
@@ -495,19 +575,22 @@ failed_pcr_list()
 
 notify_autoboot_failure()
 {
-  local dataset reason host ip msg pcr_ids pcr_status pcr_failed
+  local dataset reason host ip network msg pcr_ids pcr_status pcr_failed
 
   is_manual_phase && return 0
 
   dataset="${1}"
   reason="${2}"
+  apply_runtime_network_for_notify
   host="$(detect_host_name)"
   ip="$(detect_primary_ip)"
+  network="$(network_status_summary)"
   pcr_ids="$(kcl_get clevis.pcr_ids || printf '1,4,5,7,9')"
   pcr_status="$(pcr_status_summary)"
   pcr_failed="$(failed_pcr_list)"
   msg="Clevis auto-unlock failed on ${host}
 IP: ${ip}
+Network: ${network}
 Dataset: ${dataset}
 Reason: ${reason}
 Configured PCRs: ${pcr_ids}

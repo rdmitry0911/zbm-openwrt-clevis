@@ -483,6 +483,7 @@ install_repo_overlay() {
   install -m 0755 "${TOPDIR}/hooks/load_key_zfs_clevis_hook.sh" \
     "${files}/libexec/load_key.d/10-clevis-tpm2"
   ln -snf ../init.d/zbm-kcl-setup "${files}/etc/rc.d/S19zbm-kcl-setup"
+  ln -snf ../init.d/mwan3 "${files}/etc/rc.d/S90mwan3"
 }
 
 prepare_runtime_overlay() {
@@ -530,12 +531,27 @@ validate_rootfs() {
     "/usr/bin/clevis-encrypt-tpm2" \
     "/usr/bin/tpm2" \
     "/usr/bin/fzf" \
+    "/usr/sbin/blkid" \
+    "/usr/sbin/wpad" \
+    "/usr/sbin/wpa_supplicant" \
+    "/etc/init.d/mwan3" \
+    "/usr/sbin/mwan3" \
     "/usr/sbin/zfs" \
-	    "/usr/sbin/zpool" \
-	    "/lib/modules/${krel}/zlib_inflate.ko" \
-	    "/lib/modules/${krel}/zlib_deflate.ko" \
-	    "/lib/modules/${krel}/spl.ko" \
-	    "/lib/modules/${krel}/zfs.ko"; do
+    "/usr/sbin/zpool" \
+    "/lib/modules/${krel}/cfg80211.ko" \
+    "/lib/modules/${krel}/mac80211.ko" \
+    "/lib/modules/${krel}/iwlwifi.ko" \
+    "/lib/modules/${krel}/usbnet.ko" \
+    "/lib/modules/${krel}/asix.ko" \
+    "/lib/modules/${krel}/ax88179_178a.ko" \
+    "/lib/modules/${krel}/cdc_ether.ko" \
+    "/lib/modules/${krel}/cdc_ncm.ko" \
+    "/lib/modules/${krel}/rtl8150.ko" \
+    "/lib/modules/${krel}/r8152.ko" \
+    "/lib/modules/${krel}/zlib_inflate.ko" \
+    "/lib/modules/${krel}/zlib_deflate.ko" \
+    "/lib/modules/${krel}/spl.ko" \
+    "/lib/modules/${krel}/zfs.ko"; do
     if [ ! -e "${rootdir}${path}" ]; then
       printf 'missing rootfs path: %s\n' "${path}" >&2
       missing=1

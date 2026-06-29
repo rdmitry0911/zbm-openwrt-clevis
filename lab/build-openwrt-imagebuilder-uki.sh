@@ -160,6 +160,18 @@ EOF
 }
 
 prepare_sdk_staging() {
+  local kbuild target toolchain
+
+  if [ "${SDK_FORCE_REBUILD:-0}" != "1" ]; then
+    kbuild="$(find_sdk_kernel_dir || true)"
+    target="$(find_sdk_target_dir || true)"
+    toolchain="$(find_sdk_toolchain_dir || true)"
+    if [ -n "${kbuild}" ] && [ -n "${target}" ] && [ -n "${toolchain}" ] && [ -r "${kbuild}/Module.symvers" ]; then
+      log "using existing SDK staging/kernel build outputs"
+      return 0
+    fi
+  fi
+
   log "updating SDK feeds"
   run "${SDK_DIR}/scripts/feeds" update base packages
   run "${SDK_DIR}/scripts/feeds" install libtirpc libaio attr zlib openssl util-linux
@@ -245,6 +257,11 @@ install_extra_kernel_modules() {
 build_patched_kexec() {
   local tarball builddir install_dir patch_file hash
 
+  if [ "${KEXEC_TOOLS_FORCE_REBUILD:-0}" != "1" ] && [ -x "${PATCHED_KEXEC}" ]; then
+    log "using existing patched kexec: ${PATCHED_KEXEC}"
+    return 0
+  fi
+
   [ -d "${KEXEC_TOOLS_PATCH_DIR}" ] || die "missing kexec-tools patch directory: ${KEXEC_TOOLS_PATCH_DIR}"
 
   tarball="${BUILDDIR}/downloads/kexec-tools-${KEXEC_TOOLS_VERSION}.tar.xz"
@@ -306,8 +323,15 @@ module_this_module_size() {
   '
 }
 
+install_cached_openzfs() {
+  local install_root
+
+  install_root="${1}"
+  rsync -a "${install_root}/" "${FILES_DIR}/"
+}
+
 build_openzfs() {
-  local src builddir kbuild target toolchain cross build_triplet krel
+  local src builddir kbuild target toolchain cross build_triplet krel install_root tmp_install
 
   if [ -n "${OPENZFS_DIR}" ]; then
     src="${OPENZFS_DIR}"
@@ -324,16 +348,29 @@ build_openzfs() {
   cross="$(sdk_cross_prefix)"
   build_triplet="$(gcc -dumpmachine)"
   krel="$(kernel_release)"
+  install_root="${OPENZFS_INSTALL_ROOT:-${BUILDDIR}/openzfs-${OPENZFS_REF}-${krel}/install}"
 
   [ -n "${kbuild}" ] || die "cannot locate SDK kernel build dir"
   [ -n "${target}" ] || die "cannot locate SDK target staging dir"
   [ -n "${toolchain}" ] || die "cannot locate SDK toolchain staging dir"
   [ -r "${kbuild}/Module.symvers" ] || die "SDK kernel lacks Module.symvers"
 
+  if [ "${OPENZFS_FORCE_REBUILD:-0}" != "1" ] &&
+     [ -x "${install_root}/usr/sbin/zfs" ] &&
+     [ -e "${install_root}/lib/modules/${krel}/zfs.ko" ]; then
+    log "using cached OpenZFS install tree: ${install_root}"
+    install_cached_openzfs "${install_root}"
+    return 0
+  fi
+
   if [ -f "${builddir}/Makefile" ] && [ "${OPENZFS_FORCE_REBUILD:-0}" = "1" ]; then
     log "cleaning previous in-tree OpenZFS build artifacts"
     ( cd "${builddir}" && make distclean || make clean || true )
   fi
+
+  tmp_install="${install_root}.tmp"
+  rm -rf "${tmp_install}"
+  mkdir -p "${tmp_install}"
 
   log "building OpenZFS ${OPENZFS_REF} for SDK kernel ${krel}"
   ( cd "${src}" && [ -x ./configure ] || ./autogen.sh )
@@ -378,29 +415,34 @@ build_openzfs() {
       log "using existing OpenZFS configure output; set OPENZFS_FORCE_REBUILD=1 to force distclean"
     fi
     make -j"${JOBS}"
-    make DESTDIR="${FILES_DIR}" install
+    make DESTDIR="${tmp_install}" install
   )
 
   rm -rf \
-    "${FILES_DIR}/usr/include" \
-    "${FILES_DIR}/usr/lib/pkgconfig" \
-    "${FILES_DIR}/usr/share/doc" \
-    "${FILES_DIR}/usr/share/man" \
-    "${FILES_DIR}/usr/share/zfs/zfs-tests" \
-    "${FILES_DIR}/usr/src" \
-    "${FILES_DIR}no"
+    "${tmp_install}/usr/include" \
+    "${tmp_install}/usr/lib/pkgconfig" \
+    "${tmp_install}/usr/share/doc" \
+    "${tmp_install}/usr/share/man" \
+    "${tmp_install}/usr/share/zfs/zfs-tests" \
+    "${tmp_install}/usr/src" \
+    "${tmp_install}no"
 
-  mkdir -p "${FILES_DIR}/lib/modules/${krel}"
+  mkdir -p "${tmp_install}/lib/modules/${krel}"
   for module in spl.ko zfs.ko; do
     local src rel dest
 
-    src="$(find "${FILES_DIR}/lib/modules/${krel}" -mindepth 2 -type f -name "${module}" | sort | head -n 1)"
+    src="$(find "${tmp_install}/lib/modules/${krel}" -mindepth 2 -type f -name "${module}" | sort | head -n 1)"
     [ -n "${src}" ] || continue
-    rel="${src#"${FILES_DIR}/lib/modules/${krel}/"}"
-    dest="${FILES_DIR}/lib/modules/${krel}/${module}"
+    rel="${src#"${tmp_install}/lib/modules/${krel}/"}"
+    dest="${tmp_install}/lib/modules/${krel}/${module}"
     rm -f "${dest}"
     ln -snf "${rel}" "${dest}"
   done
+
+  rm -rf "${install_root}"
+  mkdir -p "$(dirname "${install_root}")"
+  mv "${tmp_install}" "${install_root}"
+  install_cached_openzfs "${install_root}"
 }
 
 install_zfsbootmenu() {
@@ -477,9 +519,17 @@ copy_donor_path() {
 }
 
 install_donor_glibc_tools() {
-  local tool
+  local tool fallback_root
 
-  [ -d "${HOST_TOOL_ROOTFS}" ] || die "missing HOST_TOOL_ROOTFS donor: ${HOST_TOOL_ROOTFS}"
+  if [ ! -d "${HOST_TOOL_ROOTFS}" ]; then
+    fallback_root="$(find_ib_rootfs_dir || true)"
+    if [ -n "${fallback_root}" ] && [ -d "${fallback_root}/lib/x86_64-linux-gnu" ]; then
+      log "HOST_TOOL_ROOTFS is missing; using previous ImageBuilder rootfs donor: ${fallback_root}"
+      HOST_TOOL_ROOTFS="${fallback_root}"
+    else
+      die "missing HOST_TOOL_ROOTFS donor: ${HOST_TOOL_ROOTFS}"
+    fi
+  fi
 
   log "installing donor glibc tools required by Clevis/ZBM from ${HOST_TOOL_ROOTFS}"
   for tool in tpm2 fzf mawk head tail sort hostname nohup less; do
@@ -514,6 +564,7 @@ install_repo_overlay() {
   install -m 0755 "${TOPDIR}/hooks/load_key_zfs_clevis_hook.sh" \
     "${FILES_DIR}/libexec/load_key.d/10-clevis-tpm2"
   ln -snf ../init.d/zbm-kcl-setup "${FILES_DIR}/etc/rc.d/S19zbm-kcl-setup"
+  ln -snf ../init.d/mwan3 "${FILES_DIR}/etc/rc.d/S90mwan3"
 }
 
 prepare_files_overlay() {
@@ -541,28 +592,11 @@ imagebuilder_packages() {
     printf '%s\n' \
       bash \
       blkid \
-      blockdev \
-      btrfs-progs \
-      cfdisk \
       cryptsetup \
-      fdisk \
-      f2fs-tools \
-      hdparm \
       jose \
       jq \
       libatomic \
       libtirpc \
-      coreutils \
-      gawk \
-      less \
-      losetup \
-      lsblk \
-      mount-utils \
-      nvme-cli \
-      sfdisk \
-      smartmontools \
-      swap-utils \
-      wipefs \
       -i915-firmware-dmc \
       -kmod-acpi-video \
       -kmod-backlight \
@@ -586,8 +620,20 @@ build_imagebuilder_rootfs() {
   packages="$(imagebuilder_packages)"
   rootfs_partsize="${ROOTFS_PARTSIZE:-512}"
 
-  log "building Image Builder rootfs"
-  run make -C "${IB_DIR}" image PROFILE=generic ROOTFS_PARTSIZE="${rootfs_partsize}" PACKAGES="${packages}" FILES="${FILES_DIR}"
+  if [ "${IMAGEBUILDER_FULL_IMAGE:-0}" = "1" ]; then
+    log "building Image Builder full image set"
+    run make -C "${IB_DIR}" image PROFILE=generic ROOTFS_PARTSIZE="${rootfs_partsize}" PACKAGES="${packages}" FILES="${FILES_DIR}"
+    return 0
+  fi
+
+  log "building Image Builder rootfs only"
+  find "${IB_DIR}/build_dir" -maxdepth 2 -type d -name 'root-*' -prune -exec rm -rf {} +
+  run env STAGING_DIR_HOST="${IB_DIR}/staging_dir/host" make -C "${IB_DIR}" \
+    USER_PROFILE=generic \
+    USER_PACKAGES="${packages}" \
+    USER_FILES="${FILES_DIR}" \
+    CONFIG_TARGET_ROOTFS_PARTSIZE="${rootfs_partsize}" \
+    package_reload package_install prepare_rootfs
 }
 
 find_ib_rootfs_dir() {
@@ -651,9 +697,24 @@ validate_rootfs() {
     "/usr/bin/fzf" \
     "/usr/bin/jose" \
     "/usr/bin/jq" \
+    "/usr/sbin/blkid" \
+    "/usr/sbin/wpad" \
+    "/usr/sbin/wpa_supplicant" \
+    "/etc/init.d/mwan3" \
+    "/usr/sbin/mwan3" \
     "/usr/sbin/kexec" \
     "/usr/sbin/zfs" \
     "/usr/sbin/zpool" \
+    "/lib/modules/${krel}/cfg80211.ko" \
+    "/lib/modules/${krel}/mac80211.ko" \
+    "/lib/modules/${krel}/iwlwifi.ko" \
+    "/lib/modules/${krel}/usbnet.ko" \
+    "/lib/modules/${krel}/asix.ko" \
+    "/lib/modules/${krel}/ax88179_178a.ko" \
+    "/lib/modules/${krel}/cdc_ether.ko" \
+    "/lib/modules/${krel}/cdc_ncm.ko" \
+    "/lib/modules/${krel}/rtl8150.ko" \
+    "/lib/modules/${krel}/r8152.ko" \
     "/lib/modules/${krel}/spl.ko" \
     "/lib/modules/${krel}/zfs.ko" \
     "/lib/modules/${krel}/tpm_crb.ko" \

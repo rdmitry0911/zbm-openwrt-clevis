@@ -4,46 +4,6 @@ set -euo pipefail
 export PATH=/usr/bin:/usr/sbin:/bin:/sbin
 [ -r /run/zbm-runtime/kcl.env ] && source /run/zbm-runtime/kcl.env
 
-discover_physical_ifname() {
-  local ifn
-
-  for ifn in /sys/class/net/*; do
-    ifn="${ifn##*/}"
-    case "${ifn}" in
-      lo|br-*|ifb*|sit*|tun*|tap*|veth*|docker*|virbr*)
-        continue
-        ;;
-    esac
-    [ -e "/sys/class/net/${ifn}/device" ] || continue
-    [ -r "/sys/class/net/${ifn}/carrier" ] && [ "$(cat "/sys/class/net/${ifn}/carrier" 2>/dev/null || true)" != "1" ] && continue
-    printf '%s\n' "${ifn}"
-    return 0
-  done
-
-  for ifn in /sys/class/net/*; do
-    ifn="${ifn##*/}"
-    case "${ifn}" in
-      lo|br-*|ifb*|sit*|tun*|tap*|veth*|docker*|virbr*)
-        continue
-        ;;
-    esac
-    [ -e "/sys/class/net/${ifn}/device" ] || continue
-    printf '%s\n' "${ifn}"
-    return 0
-  done
-
-  return 1
-}
-
-discover_ifname() {
-  [ -e /sys/class/net/br-lan ] && {
-    printf '%s\n' br-lan
-    return 0
-  }
-
-  discover_physical_ifname
-}
-
 log_network() {
   local msg="$1"
 
@@ -51,82 +11,345 @@ log_network() {
   printf '<6>%s\n' "[zbm-network-up] ${msg}" >/dev/kmsg 2>/dev/null || true
 }
 
-iface_exists() {
-  [ -e "/sys/class/net/${1}" ]
-}
-
-bridge_members_up() {
-  local ifn member
-
-  ifn="$1"
-  [ -d "/sys/class/net/${ifn}/brif" ] || return 0
-  for member in /sys/class/net/"${ifn}"/brif/*; do
-    [ -e "${member}" ] || continue
-    ip link set "${member##*/}" up 2>/dev/null || true
-  done
-}
-
-iface_link_ready() {
-  local ifn="$1"
-  local member carrier state
-
-  if [ -d "/sys/class/net/${ifn}/brif" ]; then
-    for member in /sys/class/net/"${ifn}"/brif/*; do
-      [ -e "${member}" ] || continue
-      carrier="$(cat "/sys/class/net/${member##*/}/carrier" 2>/dev/null || true)"
-      [ "${carrier}" = "1" ] && return 0
-    done
-  fi
-
-  carrier="$(cat "/sys/class/net/${ifn}/carrier" 2>/dev/null || true)"
-  [ "${carrier}" = "1" ] && return 0
-
-  state="$(cat "/sys/class/net/${ifn}/operstate" 2>/dev/null || true)"
-  case "${state}" in
-    up|unknown) return 0 ;;
+ignored_ifname() {
+  case "${1}" in
+    lo|br-*|ifb*|sit*|tun*|tap*|veth*|docker*|virbr*)
+      return 0
+      ;;
   esac
 
   return 1
 }
 
-configure_static() {
-  local ifn="$1"
-  local prefix
+iface_exists() {
+  [ -e "/sys/class/net/${1}" ]
+}
 
-  prefix="$(netmask_to_prefix "${ZBM_NET_NETMASK:-255.255.255.0}")"
-  kill_dhcp_client "${ifn}"
-  ip link set "${ifn}" up 2>/dev/null || true
-  bridge_members_up "${ifn}"
-  ip addr flush dev "${ifn}" 2>/dev/null || true
-  [ -n "${ZBM_NET_IPADDR:-}" ] && ip addr add "${ZBM_NET_IPADDR}/${prefix}" dev "${ifn}"
-  if [ -n "${ZBM_NET_GATEWAY:-}" ]; then
-    ip route del default 2>/dev/null || true
-    ip route add default via "${ZBM_NET_GATEWAY}" dev "${ifn}" 2>/dev/null || true
+is_wireless_ifname() {
+  local ifn
+
+  ifn="${1}"
+  [ -d "/sys/class/net/${ifn}/wireless" ] && return 0
+  [ -e "/sys/class/net/${ifn}/phy80211" ] && return 0
+  return 1
+}
+
+normalize_macaddr() {
+  local mac
+
+  mac="${1,,}"
+  mac="${mac//-/:}"
+  case "${mac}" in
+    [0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f])
+      printf '%s' "${mac}"
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+ifname_macaddr() {
+  local ifn mac
+
+  ifn="${1}"
+  [ -r "/sys/class/net/${ifn}/address" ] || return 1
+  mac="$(cat "/sys/class/net/${ifn}/address" 2>/dev/null || true)"
+  normalize_macaddr "${mac}"
+}
+
+discover_ethernet_ifname_by_mac() {
+  local want ifn mac
+
+  want="$(normalize_macaddr "${1}" || true)"
+  [ -n "${want}" ] || return 1
+
+  for ifn in /sys/class/net/*; do
+    ifn="${ifn##*/}"
+    ignored_ifname "${ifn}" && continue
+    is_wireless_ifname "${ifn}" && continue
+    [ -e "/sys/class/net/${ifn}/device" ] || continue
+    mac="$(ifname_macaddr "${ifn}" || true)"
+    [ "${mac}" = "${want}" ] || continue
+    printf '%s\n' "${ifn}"
+    return 0
+  done
+
+  return 1
+}
+
+discover_ethernet_ifname() {
+  local ifn pass carrier
+
+  for pass in carrier any; do
+    for ifn in /sys/class/net/*; do
+      ifn="${ifn##*/}"
+      ignored_ifname "${ifn}" && continue
+      is_wireless_ifname "${ifn}" && continue
+      [ -e "/sys/class/net/${ifn}/device" ] || continue
+      if [ "${pass}" = "carrier" ]; then
+        carrier="$(cat "/sys/class/net/${ifn}/carrier" 2>/dev/null || true)"
+        [ "${carrier}" = "1" ] || continue
+      fi
+      printf '%s\n' "${ifn}"
+      return 0
+    done
+  done
+
+  return 1
+}
+
+discover_wireless_ifname() {
+  local ifn
+
+  for ifn in /sys/class/net/*; do
+    ifn="${ifn##*/}"
+    ignored_ifname "${ifn}" && continue
+    is_wireless_ifname "${ifn}" || continue
+    printf '%s\n' "${ifn}"
+    return 0
+  done
+
+  return 1
+}
+
+discover_wireless_phy() {
+  local phy
+
+  for phy in /sys/class/ieee80211/*; do
+    [ -e "${phy}" ] || continue
+    printf '%s\n' "${phy##*/}"
+    return 0
+  done
+
+  return 1
+}
+
+wireless_phy_path() {
+  local phy devpath cur base idx
+
+  phy="${1}"
+  [ -n "${phy}" ] || return 1
+  devpath="$(readlink -f "/sys/class/ieee80211/${phy}/device" 2>/dev/null || true)"
+  [ -n "${devpath}" ] || return 1
+
+  devpath="${devpath#/sys/devices/}"
+  case "${devpath}" in
+    platform/*/pci*) devpath="${devpath#platform/}" ;;
+  esac
+
+  idx=0
+  for cur in /sys/class/ieee80211/"${phy}"/device/ieee80211/*; do
+    [ -e "${cur}" ] || continue
+    base="${cur##*/}"
+    [ "${base}" = "${phy}" ] && break
+    idx=$((idx + 1))
+  done
+  [ "${idx}" -gt 0 ] && devpath="${devpath}+${idx}"
+
+  printf '%s' "${devpath}"
+}
+
+wireless_hardware_present() {
+  [ -n "$(discover_wireless_phy || true)" ] || [ -n "$(discover_wireless_ifname || true)" ]
+}
+
+uci_get() {
+  command -v uci >/dev/null 2>&1 || return 1
+  uci -q get "$1"
+}
+
+uci_set() {
+  command -v uci >/dev/null 2>&1 || return 0
+  uci -q set "$1=$2" >/dev/null 2>&1 || true
+}
+
+uci_add_list() {
+  command -v uci >/dev/null 2>&1 || return 0
+  uci -q add_list "$1=$2" >/dev/null 2>&1 || true
+}
+
+uci_delete() {
+  command -v uci >/dev/null 2>&1 || return 0
+  uci -q delete "$1" >/dev/null 2>&1 || true
+}
+
+uci_commit() {
+  command -v uci >/dev/null 2>&1 || return 0
+  uci -q commit "$1" >/dev/null 2>&1 || true
+}
+
+ip4_for_ifname() {
+  local ifn
+
+  ifn="${1}"
+  [ -n "${ifn}" ] || return 1
+  iface_exists "${ifn}" || return 1
+  ip -o -4 addr show dev "${ifn}" scope global 2>/dev/null | awk '
+    {
+      split($4, a, "/")
+      print a[1]
+      exit
+    }
+  '
+}
+
+resolve_wan_ifname() {
+  local ifn mac matched
+
+  mac="${ZBM_NET_MACADDR:-${ZBM_WAN_MACADDR:-}}"
+  if [ -n "${mac}" ]; then
+    matched="$(discover_ethernet_ifname_by_mac "${mac}" || true)"
+    if [ -n "${matched}" ]; then
+      printf '%s' "${matched}"
+      return 0
+    fi
+    return 1
   fi
-  write_resolv_conf
+
+  ifn="${ZBM_WAN_IFNAME:-${ZBM_NET_IFNAME:-}}"
+  [ -n "${ifn}" ] || ifn="$(uci_get network.wan.device || true)"
+  if [ -n "${ifn}" ] && iface_exists "${ifn}"; then
+    printf '%s' "${ifn}"
+    return 0
+  fi
+
+  discover_ethernet_ifname
+}
+
+resolve_wwan_ifname() {
+  local ifn
+
+  ifn="${ZBM_WWAN_IFNAME:-${ZBM_WIFI_IFNAME:-}}"
+  if [ -n "${ifn}" ] && iface_exists "${ifn}"; then
+    printf '%s' "${ifn}"
+    return 0
+  fi
+
+  discover_wireless_ifname
+}
+
+ensure_wan_device_config() {
+  local configured fallback mac matched
+
+  configured="${ZBM_WAN_IFNAME:-${ZBM_NET_IFNAME:-}}"
+  [ -n "${configured}" ] || configured="$(uci_get network.wan.device || true)"
+  mac="${ZBM_NET_MACADDR:-${ZBM_WAN_MACADDR:-}}"
+  if [ -n "${mac}" ]; then
+    matched="$(discover_ethernet_ifname_by_mac "${mac}" || true)"
+    if [ -n "${matched}" ]; then
+      ZBM_NET_IFNAME="${matched}"
+      ZBM_WAN_IFNAME="${matched}"
+      if [ "${configured}" != "${matched}" ]; then
+        log_network "configured ethernet ${configured:-none} does not match ${mac}, using ${matched}"
+        uci_set network.wan.device "${matched}"
+        uci_commit network
+      fi
+      return 0
+    fi
+    log_network "configured ethernet mac ${mac} was not found"
+    return 0
+  fi
+
+  if [ -n "${configured}" ] && iface_exists "${configured}"; then
+    return 0
+  fi
+
+  fallback="$(discover_ethernet_ifname || true)"
+  [ -n "${fallback}" ] || return 0
+  [ "${fallback}" = "${configured}" ] && return 0
+
+  log_network "configured ethernet ${configured:-none} is absent, using ${fallback}"
+  uci_set network.wan.device "${fallback}"
+  uci_commit network
+}
+
+ensure_wireless_device_config() {
+  local device phy path configured_path configured_phy
+
+  [ -n "${ZBM_WIFI_SSID:-}" ] || return 0
+  device="${ZBM_WIFI_DEVICE:-radio0}"
+  path="${ZBM_WIFI_PATH:-}"
+  phy="${ZBM_WIFI_PHY:-}"
+  [ -n "${phy}" ] || phy="$(discover_wireless_phy || true)"
+  [ -n "${path}" ] || path="$(wireless_phy_path "${phy}" || true)"
+
+  configured_path="$(uci_get "wireless.${device}.path" || true)"
+  configured_phy="$(uci_get "wireless.${device}.phy" || true)"
+  if [ -n "${path}" ] && [ "${configured_path}" != "${path}" ]; then
+    log_network "configured wifi ${device} path ${configured_path:-none} is absent, using ${path}"
+    uci_set "wireless.${device}.path" "${path}"
+    uci_commit wireless
+  elif [ -z "${path}" ] && [ -n "${phy}" ] && [ "${configured_phy}" != "${phy}" ]; then
+    log_network "configured wifi ${device} phy ${configured_phy:-none} is absent, using ${phy}"
+    uci_set "wireless.${device}.phy" "${phy}"
+    uci_commit wireless
+  fi
+}
+
+bring_link_up() {
+  local ifn
+
+  ifn="${1}"
+  [ -n "${ifn}" ] || return 0
+  iface_exists "${ifn}" || return 0
+  ip link set "${ifn}" up 2>/dev/null || true
+}
+
+network_has_default_route() {
+  ip route show default 2>/dev/null | grep -q '^default '
+}
+
+default_gateway_for_ifname() {
+  local ifn
+
+  ifn="${1}"
+  [ -n "${ifn}" ] || return 1
+  ip -4 route show default dev "${ifn}" 2>/dev/null | awk '
+    /^default / {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "via" && (i + 1) <= NF) {
+          print $(i + 1)
+          exit
+        }
+      }
+    }
+  '
+}
+
+uplink_status() {
+  local wan_if wwan_if wan_ip wwan_ip
+
+  wan_if="$(resolve_wan_ifname || true)"
+  wwan_if="$(resolve_wwan_ifname || true)"
+  wan_ip="$(ip4_for_ifname "${wan_if}" || true)"
+  wwan_ip="$(ip4_for_ifname "${wwan_if}" || true)"
+
+  printf 'wan(%s)=%s wwan(%s)=%s' \
+    "${wan_if:-absent}" "${wan_ip:-down}" \
+    "${wwan_if:-absent}" "${wwan_ip:-down}"
 }
 
 network_ready() {
-  local ifn="$1"
+  local wan_if wwan_if
 
-  iface_exists "${ifn}" || return 1
-  ip -4 addr show dev "${ifn}" scope global 2>/dev/null | grep -q 'inet ' || return 1
-  ip route show default 2>/dev/null | grep -q '^default ' || return 1
-  iface_link_ready "${ifn}" || return 1
+  wan_if="$(resolve_wan_ifname || true)"
+  wwan_if="$(resolve_wwan_ifname || true)"
 
-  if [ -n "${ZBM_NET_GATEWAY:-}" ] && command -v ping >/dev/null 2>&1; then
-    ping -c 1 -W 1 "${ZBM_NET_GATEWAY}" >/dev/null 2>&1 || return 1
-  fi
-
+  { [ -n "$(ip4_for_ifname "${wan_if}" || true)" ] ||
+    [ -n "$(ip4_for_ifname "${wwan_if}" || true)" ]; } || return 1
+  network_has_default_route || return 1
   return 0
 }
 
 wait_network_ready() {
-  local ifn="$1"
-  local tries="${2:-20}"
+  local tries
 
+  tries="${1:-30}"
   while [ "${tries}" -gt 0 ]; do
-    network_ready "${ifn}" && return 0
+    if network_ready; then
+      return 0
+    fi
     sleep 1
     tries=$((tries - 1))
   done
@@ -134,102 +357,92 @@ wait_network_ready() {
   return 1
 }
 
-kill_dhcp_client() {
-  local pidfile pid
+wwan_ready() {
+  local wwan_if
 
-  pidfile="/var/run/udhcpc-${1}.pid"
-  if [ -r "${pidfile}" ]; then
-    pid="$(cat "${pidfile}" 2>/dev/null || true)"
-    [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true
-    rm -f "${pidfile}"
-  fi
+  wwan_if="$(resolve_wwan_ifname || true)"
+  [ -n "$(ip4_for_ifname "${wwan_if}" || true)" ]
 }
 
-write_resolv_conf() {
-  local dns oldifs
+wait_wwan_ready() {
+  local tries
 
-  [ -n "${ZBM_NET_DNS:-}" ] || return 0
-  : > /etc/resolv.conf
-  oldifs="${IFS}"
-  IFS=', '
-  for dns in ${ZBM_NET_DNS}; do
-    [ -n "${dns}" ] && printf 'nameserver %s\n' "${dns}" >> /etc/resolv.conf
+  tries="${1:-20}"
+  while [ "${tries}" -gt 0 ]; do
+    if wwan_ready; then
+      return 0
+    fi
+    sleep 1
+    tries=$((tries - 1))
   done
-  IFS="${oldifs}"
+
+  return 1
 }
 
-netmask_to_prefix() {
-  case "${1}" in
-    255.255.255.255) echo 32 ;;
-    255.255.255.254) echo 31 ;;
-    255.255.255.252) echo 30 ;;
-    255.255.255.248) echo 29 ;;
-    255.255.255.240) echo 28 ;;
-    255.255.255.224) echo 27 ;;
-    255.255.255.192) echo 26 ;;
-    255.255.255.128) echo 25 ;;
-    255.255.255.0) echo 24 ;;
-    255.255.254.0) echo 23 ;;
-    255.255.252.0) echo 22 ;;
-    255.255.248.0) echo 21 ;;
-    255.255.240.0) echo 20 ;;
-    255.255.224.0) echo 19 ;;
-    255.255.192.0) echo 18 ;;
-    255.255.128.0) echo 17 ;;
-    255.255.0.0) echo 16 ;;
-    255.254.0.0) echo 15 ;;
-    255.252.0.0) echo 14 ;;
-    255.248.0.0) echo 13 ;;
-    255.240.0.0) echo 12 ;;
-    255.224.0.0) echo 11 ;;
-    255.192.0.0) echo 10 ;;
-    255.128.0.0) echo 9 ;;
-    255.0.0.0) echo 8 ;;
-    0.0.0.0|'') echo 0 ;;
-    *) echo "${1}" ;;
-  esac
+refresh_mwan3_interface_tracking() {
+  local section ifn gw
+
+  section="${1}"
+  ifn="${2}"
+  [ -n "${section}" ] || return 0
+
+  uci_delete "mwan3.${section}.track_ip"
+  gw="$(default_gateway_for_ifname "${ifn}" || true)"
+  [ -n "${gw}" ] && uci_add_list "mwan3.${section}.track_ip" "${gw}"
+  uci_add_list "mwan3.${section}.track_ip" "1.1.1.1"
+  uci_add_list "mwan3.${section}.track_ip" "8.8.8.8"
 }
 
-target_if="${ZBM_NET_IFNAME:-}"
-[ -n "${target_if}" ] || target_if="$(discover_ifname || true)"
-[ -n "${target_if}" ] || exit 0
+refresh_mwan3_tracking() {
+  local wan_if wwan_if
 
-if ! iface_exists "${target_if}"; then
-  fallback_if="$(discover_ifname || true)"
-  if [ -n "${fallback_if}" ]; then
-    log_network "configured interface ${target_if} is absent, using ${fallback_if}"
-    target_if="${fallback_if}"
+  wan_if="$(resolve_wan_ifname || true)"
+  wwan_if="$(resolve_wwan_ifname || true)"
+
+  refresh_mwan3_interface_tracking wan "${wan_if}"
+  refresh_mwan3_interface_tracking wwan "${wwan_if}"
+  uci_commit mwan3
+}
+
+ensure_wan_device_config
+ensure_wireless_device_config
+bring_link_up "$(resolve_wan_ifname || true)"
+
+if [ -x /etc/init.d/network ]; then
+  /etc/init.d/network reload >/dev/null 2>&1 ||
+    /etc/init.d/network restart >/dev/null 2>&1 ||
+    /etc/init.d/network start >/dev/null 2>&1 || true
+fi
+
+ifup wan >/dev/null 2>&1 || true
+
+if [ -n "${ZBM_WIFI_SSID:-}" ]; then
+  if command -v wifi >/dev/null 2>&1; then
+    wifi up >/dev/null 2>&1 || true
   fi
+  ifup wwan >/dev/null 2>&1 || true
 fi
 
-if [ -n "${ZBM_WIFI_SSID:-}" ] && command -v wifi >/dev/null 2>&1; then
-  wifi up >/dev/null 2>&1 || true
+if [ -x /etc/init.d/mwan3 ]; then
+  /etc/init.d/mwan3 enable >/dev/null 2>&1 || true
 fi
 
-ip link set "${target_if}" up 2>/dev/null || true
-bridge_members_up "${target_if}"
-
-if [ "${ZBM_NET_PROTO:-dhcp}" = "static" ]; then
-  configure_static "${target_if}"
-else
-  udhcpc -q -b -i "${target_if}" -p "/var/run/udhcpc-${target_if}.pid" -s /lib/netifd/dhcp.script >/dev/null 2>&1 || true
-fi
-
-if wait_network_ready "${target_if}" 20; then
-  log_network "network ready on ${target_if}"
+if wait_network_ready 30; then
+  if [ -n "${ZBM_WIFI_SSID:-}" ] && wireless_hardware_present; then
+    wait_wwan_ready 25 || true
+  fi
+  if [ -x /etc/init.d/firewall ]; then
+    /etc/init.d/firewall reload >/dev/null 2>&1 ||
+      /etc/init.d/firewall restart >/dev/null 2>&1 ||
+      /etc/init.d/firewall start >/dev/null 2>&1 || true
+  fi
+  if [ -x /etc/init.d/mwan3 ]; then
+    refresh_mwan3_tracking
+    /etc/init.d/mwan3 restart >/dev/null 2>&1 || true
+  fi
+  log_network "network ready: $(uplink_status)"
   exit 0
 fi
 
-fallback_if="$(discover_physical_ifname || true)"
-if [ "${ZBM_NET_PROTO:-dhcp}" = "static" ] && [ -n "${fallback_if}" ] && [ "${fallback_if}" != "${target_if}" ]; then
-  log_network "network not ready on ${target_if}, trying ${fallback_if}"
-  ip addr flush dev "${target_if}" 2>/dev/null || true
-  configure_static "${fallback_if}"
-  if wait_network_ready "${fallback_if}" 10; then
-    log_network "network ready on ${fallback_if}"
-    exit 0
-  fi
-fi
-
-log_network "network did not become ready"
+log_network "network did not become ready: $(uplink_status)"
 exit 1

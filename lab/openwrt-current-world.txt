@@ -30,6 +30,9 @@ iwlwifi-firmware-ax210
 iwlwifi-firmware-ax411
 iwlwifi-firmware-be200
 iwlwifi-firmware-iwl3168
+iwlwifi-firmware-iwl6000g2
+iwlwifi-firmware-iwl6000g2a
+iwlwifi-firmware-iwl6000g2b
 iwlwifi-firmware-iwl7265
 iwlwifi-firmware-iwl7265d
 iwlwifi-firmware-iwl8260c
@@ -51,6 +54,7 @@ kmod-ata-core
 kmod-backlight
 kmod-bnx2
 kmod-button-hotplug
+kmod-cfg80211
 kmod-crypto-aead
 kmod-crypto-cbc
 kmod-crypto-ccm
@@ -102,12 +106,14 @@ kmod-i2c-core
 kmod-igb
 kmod-igc
 kmod-input-core
+kmod-iwlwifi
 kmod-ixgbe
 kmod-keys-encrypted
 kmod-keys-trusted
-kmod-lib-crc-ccitt
 kmod-lib-crc32c
+kmod-lib-crc-ccitt
 kmod-libphy
+kmod-mac80211
 kmod-mdio
 kmod-mdio-devres
 kmod-mii
@@ -118,9 +124,9 @@ kmod-nf-flow
 kmod-nf-log
 kmod-nf-log6
 kmod-nf-nat
+kmod-nfnetlink
 kmod-nf-reject
 kmod-nf-reject6
-kmod-nfnetlink
 kmod-nft-core
 kmod-nft-fib
 kmod-nft-nat
@@ -132,8 +138,8 @@ kmod-nls-utf8
 kmod-nvme
 kmod-pcs-xpcs
 kmod-phy-ax88796b
-kmod-phy-realtek
 kmod-phylink
+kmod-phy-realtek
 kmod-ppp
 kmod-pppoe
 kmod-pppox
@@ -202,6 +208,7 @@ lvm2
 mc
 mkf2fs
 mtd
+mwan3
 nano-plus
 netifd
 nftables-json
@@ -236,4 +243,5 @@ urngd
 usign
 wifi-scripts
 wireless-regdb
+wpad-basic-mbedtls
 zlib

@@ -300,14 +300,30 @@ Telegram messages are sent only when automatic unlock fails. They include:
 - Values: `dhcp`, `static`
 - Default: `dhcp`
 - Consumer: `zbm-kcl-apply`
-- Meaning: primary OpenWrt network mode
+- Meaning: primary wired OpenWrt `wan` network mode
 
 ### `owrt.net_ifname`
 
-- Default: first non-loopback interface discovered at runtime, then `eth0` as fallback
+- Default: interface matched by `owrt.net_macaddr`, first wired Ethernet
+  interface discovered at runtime, then `eth0` as fallback
 - Consumer: `zbm-kcl-apply`
-- Meaning: primary wired interface name for the generated OpenWrt `lan`
+- Meaning: primary wired interface name for the generated OpenWrt `wan`
   interface
+
+### `owrt.net_macaddr`
+
+- Aliases: `owrt.wan_macaddr`
+- Default: empty
+- Consumer: `zbm-kcl-apply`, `zbm-network-up`
+- Meaning: primary wired `wan` interface MAC address
+
+When this option is set, the runtime selects the wired Ethernet interface with
+the matching MAC address for `wan`. This is preferred over automatic
+first-interface discovery and is useful on systems with multiple Ethernet
+adapters whose `ethN` names can change across boots.
+
+The parser accepts lower-case or upper-case colon-separated MAC addresses and
+hyphen-separated MAC addresses.
 
 ### `owrt.net_ipaddr`
 

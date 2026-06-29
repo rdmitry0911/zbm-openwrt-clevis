@@ -90,6 +90,19 @@ With networking available in the boot runtime, the operator can connect to
 OpenWrt remotely, run the manual unlock path, enter the ZFS passphrase, and
 then decide whether to reseal for the new measured state.
 
+For wired recovery on a host with multiple Ethernet adapters, pin `wan` to the
+expected port by MAC address. Static IPv4 can be assigned to the same `wan`
+interface:
+
+```conf
+owrt.net_macaddr="52:54:00:aa:bb:22"
+owrt.net_proto=static
+owrt.net_ipaddr=192.0.2.10
+owrt.net_netmask=255.255.255.0
+owrt.net_gateway=192.0.2.1
+owrt.net_dns=192.0.2.1,1.1.1.1
+```
+
 This turns an otherwise stranded encrypted laptop into a recoverable system:
 it still refuses to release the ZFS key automatically after an unexpected
 measurement change, but it exposes a controlled, authenticated recovery

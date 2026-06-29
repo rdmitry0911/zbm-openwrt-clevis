@@ -11,6 +11,13 @@ TARGET_DISK="${TARGET_DISK:-${TARGET_DIR}/${TARGET_POOL}-pool.img}"
 MEMORY="${MEMORY:-4096}"
 SMP="${SMP:-2}"
 SSH_FWD_PORT="${SSH_FWD_PORT:-10039}"
+QEMU_ETHERNET="${QEMU_ETHERNET:-1}"
+QEMU_ETHERNET_MAC="${QEMU_ETHERNET_MAC:-}"
+QEMU_WIFI_PCI_HOST="${QEMU_WIFI_PCI_HOST:-}"
+QEMU_WIFI_PCI_AUTO="${QEMU_WIFI_PCI_AUTO:-0}"
+QEMU_EXTRA_ARGS="${QEMU_EXTRA_ARGS:-}"
+WIFI_SSID="${WIFI_SSID:-}"
+WIFI_PSK="${WIFI_PSK:-}"
 TPM_DIR="${TPM_DIR:-${OUTDIR}/swtpm-multigpu-zfs}"
 TPM_SOCK="${TPM_DIR}/swtpm.sock"
 TPM_PID="${TPM_DIR}/swtpm.pid"
@@ -29,6 +36,56 @@ TARGET_APPEND_DEFAULT='console=tty0 console=ttyS0,115200n8 loglevel=7 ignore_log
 TARGET_APPEND="${TARGET_APPEND:-${TARGET_APPEND_DEFAULT}}"
 REFIND_OPTIONS="${REFIND_OPTIONS:-rd.shell=0 console=tty0 console=ttyS0,115200n8 loglevel=8 ignore_loglevel clevis.decrypt=yes clevis.store=zfs clevis.pcr_ids=1,4,5,7,9 owrt.host=zbm-lab owrt.ttylogin=0 owrt.autostart=n owrt.auto_bootfs=${TARGET_POOL}/ROOT/ubuntu owrt.console_rotate=right owrt.target_console_rotate=right owrt.target_fbcon_map=0 owrt.target_kcl_append=\"\"${TARGET_APPEND}\"\"}"
 RESEAL_KEY_DRIVE_ARGS=""
+NETWORK_ARGS=""
+
+append_refind_option() {
+  local key value
+
+  key="${1}"
+  value="${2}"
+  [ -n "${value}" ] || return 0
+  case "${value}" in
+    *[[:space:]]*)
+      echo "cannot append ${key}: values with whitespace must be passed through REFIND_OPTIONS" >&2
+      exit 1
+      ;;
+  esac
+  REFIND_OPTIONS="${REFIND_OPTIONS} ${key}=${value}"
+}
+
+if [ -n "${WIFI_SSID}" ]; then
+  append_refind_option owrt.wifi_ssid "${WIFI_SSID}"
+fi
+if [ -n "${WIFI_PSK}" ]; then
+  append_refind_option owrt.wifi_psk "${WIFI_PSK}"
+fi
+
+if [ "${QEMU_WIFI_PCI_AUTO}" = "1" ] && [ -z "${QEMU_WIFI_PCI_HOST}" ]; then
+  QEMU_WIFI_PCI_HOST="$(lspci -Dnnd 8086:088e 2>/dev/null | awk '{print $1; exit}')"
+  [ -n "${QEMU_WIFI_PCI_HOST}" ] || {
+    echo "Intel Centrino Advanced-N 6235 [8086:088e] was not found for passthrough" >&2
+    exit 1
+  }
+fi
+
+if [ "${QEMU_ETHERNET}" = "1" ]; then
+  NETWORK_ARGS="${NETWORK_ARGS} -nic user,model=virtio-net-pci,hostfwd=tcp::${SSH_FWD_PORT}-:22"
+  if [ -n "${QEMU_ETHERNET_MAC}" ]; then
+    NETWORK_ARGS="${NETWORK_ARGS},mac=${QEMU_ETHERNET_MAC}"
+  fi
+else
+  NETWORK_ARGS="${NETWORK_ARGS} -nic none"
+fi
+
+if [ -n "${QEMU_WIFI_PCI_HOST}" ]; then
+  if [ -e "/sys/bus/pci/devices/${QEMU_WIFI_PCI_HOST}/driver" ]; then
+    wifi_driver="$(basename "$(readlink -f "/sys/bus/pci/devices/${QEMU_WIFI_PCI_HOST}/driver")")"
+    if [ "${wifi_driver}" != "vfio-pci" ]; then
+      echo "warning: ${QEMU_WIFI_PCI_HOST} is bound to ${wifi_driver}, not vfio-pci; QEMU passthrough may fail" >&2
+    fi
+  fi
+  NETWORK_ARGS="${NETWORK_ARGS} -device vfio-pci,host=${QEMU_WIFI_PCI_HOST}"
+fi
 
 if [ -n "${RESEAL_KEY_DRIVE_FILE}" ]; then
   if [ ! -f "${RESEAL_KEY_DRIVE_FILE}" ]; then
@@ -121,4 +178,5 @@ exec qemu-system-x86_64 \
   -chardev socket,id=chrtpm,path="${TPM_SOCK}" \
   -tpmdev emulator,id=tpm0,chardev=chrtpm \
   -device tpm-tis,tpmdev=tpm0 \
-  -nic user,model=virtio-net-pci,hostfwd=tcp::"${SSH_FWD_PORT}"-:22
+  ${NETWORK_ARGS} \
+  ${QEMU_EXTRA_ARGS}

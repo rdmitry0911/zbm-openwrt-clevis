@@ -14,16 +14,76 @@ kget() {
   get_zbm_arg "$@" 2>/dev/null
 }
 
-discover_physical_ifname() {
+ignored_ifname() {
+  case "${1}" in
+    lo|br-*|ifb*|sit*|tun*|tap*|veth*|docker*|virbr*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+is_wireless_ifname() {
+  local ifn
+
+  ifn="${1}"
+  [ -d "/sys/class/net/${ifn}/wireless" ] && return 0
+  [ -e "/sys/class/net/${ifn}/phy80211" ] && return 0
+  return 1
+}
+
+normalize_macaddr() {
+  local mac
+
+  mac="${1,,}"
+  mac="${mac//-/:}"
+  case "${mac}" in
+    [0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f])
+      printf '%s' "${mac}"
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+ifname_macaddr() {
+  local ifn mac
+
+  ifn="${1}"
+  [ -r "/sys/class/net/${ifn}/address" ] || return 1
+  mac="$(cat "/sys/class/net/${ifn}/address" 2>/dev/null || true)"
+  normalize_macaddr "${mac}"
+}
+
+discover_ethernet_ifname_by_mac() {
+  local want ifn mac
+
+  want="$(normalize_macaddr "${1}" || true)"
+  [ -n "${want}" ] || return 1
+
+  for ifn in /sys/class/net/*; do
+    ifn="${ifn##*/}"
+    ignored_ifname "${ifn}" && continue
+    is_wireless_ifname "${ifn}" && continue
+    [ -e "/sys/class/net/${ifn}/device" ] || continue
+    mac="$(ifname_macaddr "${ifn}" || true)"
+    [ "${mac}" = "${want}" ] || continue
+    printf '%s\n' "${ifn}"
+    return 0
+  done
+
+  return 1
+}
+
+discover_ethernet_ifname() {
   local ifn
 
   for ifn in /sys/class/net/*; do
     ifn="${ifn##*/}"
-    case "${ifn}" in
-      lo|br-*|ifb*|sit*|tun*|tap*|veth*|docker*|virbr*)
-        continue
-        ;;
-    esac
+    ignored_ifname "${ifn}" && continue
+    is_wireless_ifname "${ifn}" && continue
     [ -e "/sys/class/net/${ifn}/device" ] || continue
     [ -r "/sys/class/net/${ifn}/carrier" ] && [ "$(cat "/sys/class/net/${ifn}/carrier" 2>/dev/null || true)" != "1" ] && continue
     printf '%s\n' "${ifn}"
@@ -32,11 +92,8 @@ discover_physical_ifname() {
 
   for ifn in /sys/class/net/*; do
     ifn="${ifn##*/}"
-    case "${ifn}" in
-      lo|br-*|ifb*|sit*|tun*|tap*|veth*|docker*|virbr*)
-        continue
-        ;;
-    esac
+    ignored_ifname "${ifn}" && continue
+    is_wireless_ifname "${ifn}" && continue
     [ -e "/sys/class/net/${ifn}/device" ] || continue
     printf '%s\n' "${ifn}"
     return 0
@@ -45,13 +102,49 @@ discover_physical_ifname() {
   return 1
 }
 
-discover_ifname() {
-  [ -e /sys/class/net/br-lan ] && {
-    printf '%s\n' br-lan
-    return 0
-  }
+discover_physical_ifname() {
+  discover_ethernet_ifname
+}
 
-  discover_physical_ifname
+discover_ifname() {
+  discover_ethernet_ifname
+}
+
+discover_wireless_phy() {
+  local phy
+
+  for phy in /sys/class/ieee80211/*; do
+    [ -e "${phy}" ] || continue
+    printf '%s\n' "${phy##*/}"
+    return 0
+  done
+
+  return 1
+}
+
+wireless_phy_path() {
+  local phy devpath cur base idx
+
+  phy="${1}"
+  [ -n "${phy}" ] || return 1
+  devpath="$(readlink -f "/sys/class/ieee80211/${phy}/device" 2>/dev/null || true)"
+  [ -n "${devpath}" ] || return 1
+
+  devpath="${devpath#/sys/devices/}"
+  case "${devpath}" in
+    platform/*/pci*) devpath="${devpath#platform/}" ;;
+  esac
+
+  idx=0
+  for cur in /sys/class/ieee80211/"${phy}"/device/ieee80211/*; do
+    [ -e "${cur}" ] || continue
+    base="${cur##*/}"
+    [ "${base}" = "${phy}" ] && break
+    idx=$((idx + 1))
+  done
+  [ "${idx}" -gt 0 ] && devpath="${devpath}+${idx}"
+
+  printf '%s' "${devpath}"
 }
 
 append_unique_line() {
@@ -372,6 +465,7 @@ append_dns_config() {
 
 net_proto="$(kget owrt.net_proto || true)"
 net_ifname="$(kget owrt.net_ifname || true)"
+net_macaddr="$(kget owrt.net_macaddr owrt.wan_macaddr || true)"
 net_ipaddr="$(kget owrt.net_ipaddr || true)"
 net_netmask="$(kget owrt.net_netmask || true)"
 net_gateway="$(kget owrt.net_gateway || true)"
@@ -380,6 +474,8 @@ wifi_ssid="$(kget owrt.wifi_ssid || true)"
 wifi_psk="$(kget owrt.wifi_psk || true)"
 wifi_device="$(kget owrt.wifi_device || true)"
 wifi_ifname="$(kget owrt.wifi_ifname || true)"
+wifi_phy="$(kget owrt.wifi_phy || true)"
+wifi_path="$(kget owrt.wifi_path || true)"
 wifi_encryption="$(kget owrt.wifi_encryption || true)"
 ssh_pubkey="$(kget owrt.ssh_pubkey || true)"
 root_hash="$(kget owrt.root_password_hash || true)"
@@ -402,10 +498,28 @@ auto_bootfs="$(kget owrt.auto_bootfs || true)"
 host_name="$(kget owrt.host clevis.host || true)"
 
 [ -n "${net_proto}" ] || net_proto=dhcp
-[ -n "${net_ifname}" ] || net_ifname="$(discover_ifname || true)"
+if [ -n "${net_macaddr}" ]; then
+  net_macaddr_normalized="$(normalize_macaddr "${net_macaddr}" || true)"
+  if [ -n "${net_macaddr_normalized}" ]; then
+    net_macaddr="${net_macaddr_normalized}"
+  else
+    printf '<4>%s\n' "[zbm-kcl-apply] ignoring invalid owrt.net_macaddr=${net_macaddr}" >/dev/kmsg 2>/dev/null || true
+    net_macaddr=""
+  fi
+fi
+[ -n "${net_ifname}" ] || [ -z "${net_macaddr}" ] || {
+  net_ifname="$(discover_ethernet_ifname_by_mac "${net_macaddr}" || true)"
+  if [ -z "${net_ifname}" ]; then
+    printf '<4>%s\n' "[zbm-kcl-apply] no ethernet interface matches owrt.net_macaddr=${net_macaddr}" >/dev/kmsg 2>/dev/null || true
+    net_ifname=wan0
+  fi
+}
+[ -n "${net_ifname}" ] || net_ifname="$(discover_ethernet_ifname || true)"
 [ -n "${net_ifname}" ] || net_ifname=eth0
 [ -n "${wifi_device}" ] || wifi_device=radio0
 [ -n "${wifi_ifname}" ] || wifi_ifname=wlan0
+[ -n "${wifi_phy}" ] || wifi_phy="$(discover_wireless_phy || true)"
+[ -n "${wifi_path}" ] || wifi_path="$(wireless_phy_path "${wifi_phy}" || true)"
 [ -n "${wifi_encryption}" ] || wifi_encryption=psk2
 [ -n "${clevis_decrypt}" ] || clevis_decrypt=yes
 [ -n "${clevis_pcr_ids}" ] || clevis_pcr_ids=1,4,5,7,9
@@ -459,9 +573,10 @@ config interface 'loopback'
 	option ipaddr '127.0.0.1'
 	option netmask '255.0.0.0'
 
-config interface 'lan'
+config interface 'wan'
 	option device '${net_ifname}'
 	option proto '${net_proto}'
+	option metric '10'
 CFG
 
 if [ "${net_proto}" = "static" ]; then
@@ -471,24 +586,116 @@ if [ "${net_proto}" = "static" ]; then
 fi
 append_dns_config
 
+cat >> /etc/config/network <<CFG
+
+config interface 'wwan'
+	option proto 'dhcp'
+	option metric '20'
+CFG
+
 cat > /etc/config/wireless <<CFG
 config wifi-device '${wifi_device}'
 	option type 'mac80211'
 	option disabled '$([ -n "${wifi_ssid}" ] && printf 0 || printf 1)'
+CFG
+
+if [ -n "${wifi_path}" ]; then
+  printf "\toption path '%s'\n" "${wifi_path}" >> /etc/config/wireless
+elif [ -n "${wifi_phy}" ]; then
+  printf "\toption phy '%s'\n" "${wifi_phy}" >> /etc/config/wireless
+fi
+
+cat >> /etc/config/wireless <<CFG
 
 config wifi-iface 'default_${wifi_device}'
 	option device '${wifi_device}'
 	option mode 'sta'
-	option network 'lan'
+	option network 'wwan'
+	option ifname '${wifi_ifname}'
 	option ssid '${wifi_ssid}'
 	option encryption '${wifi_encryption}'
 	option key '${wifi_psk}'
 	option disabled '$([ -n "${wifi_ssid}" ] && printf 0 || printf 1)'
 CFG
 
+cat > /etc/config/mwan3 <<CFG
+config globals 'globals'
+	option mmx_mask '0x3F00'
+	option rtmon_interval '5'
+
+config interface 'wan'
+	option enabled '1'
+	option family 'ipv4'
+	option reliability '1'
+	option count '1'
+	option timeout '2'
+	option interval '5'
+	option failure_interval '5'
+	option recovery_interval '5'
+	option down '2'
+	option up '1'
+	list track_ip '1.1.1.1'
+	list track_ip '8.8.8.8'
+
+config interface 'wwan'
+	option enabled '$([ -n "${wifi_ssid}" ] && printf 1 || printf 0)'
+	option family 'ipv4'
+	option reliability '1'
+	option count '1'
+	option timeout '2'
+	option interval '5'
+	option failure_interval '5'
+	option recovery_interval '5'
+	option down '2'
+	option up '1'
+	list track_ip '1.1.1.1'
+	list track_ip '8.8.8.8'
+
+config member 'wan_m1_w3'
+	option interface 'wan'
+	option metric '1'
+	option weight '3'
+
+config member 'wwan_m2_w1'
+	option interface 'wwan'
+	option metric '2'
+	option weight '1'
+
+config policy 'wan_primary'
+	option last_resort 'unreachable'
+	list use_member 'wan_m1_w3'
+	list use_member 'wwan_m2_w1'
+
+config rule 'default_rule_v4'
+	option dest_ip '0.0.0.0/0'
+	option proto 'all'
+	option family 'ipv4'
+	option use_policy 'wan_primary'
+CFG
+
+cat > /etc/config/firewall <<CFG
+config defaults
+	option input 'ACCEPT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+	option synflood_protect '1'
+
+config zone
+	option name 'uplink'
+	option input 'ACCEPT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+	list network 'wan'
+	list network 'wwan'
+CFG
+
 write_env_file /run/zbm-runtime/kcl.env \
   ZBM_NET_PROTO "${net_proto}" \
   ZBM_NET_IFNAME "${net_ifname}" \
+  ZBM_WAN_IFNAME "${net_ifname}" \
+  ZBM_NET_MACADDR "${net_macaddr}" \
+  ZBM_WAN_MACADDR "${net_macaddr}" \
+  ZBM_WWAN_IFNAME "${wifi_ifname}" \
   ZBM_NET_IPADDR "${net_ipaddr}" \
   ZBM_NET_NETMASK "${net_netmask}" \
   ZBM_NET_GATEWAY "${net_gateway}" \
@@ -497,6 +704,8 @@ write_env_file /run/zbm-runtime/kcl.env \
   ZBM_WIFI_PSK "${wifi_psk}" \
   ZBM_WIFI_DEVICE "${wifi_device}" \
   ZBM_WIFI_IFNAME "${wifi_ifname}" \
+  ZBM_WIFI_PHY "${wifi_phy}" \
+  ZBM_WIFI_PATH "${wifi_path}" \
   ZBM_WIFI_ENCRYPTION "${wifi_encryption}" \
   ZBM_SSH_PUBKEY "${ssh_pubkey}" \
   ZBM_ROOT_PASSWORD_HASH "${root_hash}" \

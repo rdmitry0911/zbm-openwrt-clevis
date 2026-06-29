@@ -9,6 +9,26 @@ printf '<6>%s\n' '[zbm-autoboot] begin' >/dev/kmsg 2>/dev/null || true
 echo "[zbm-autoboot] begin"
 mkdir -p /run
 mkdir -p /run/zbm-progress
+
+if [ -x /usr/bin/zbm-kcl-apply ]; then
+  : > /run/zbm-progress/zbm-autoboot.apply-kcl
+  printf '<6>%s\n' '[zbm-autoboot] applying kcl' >/dev/kmsg 2>/dev/null || true
+  echo "[zbm-autoboot] applying kcl"
+  /usr/bin/zbm-kcl-apply >/tmp/zbm-kcl-apply.log 2>&1 || true
+fi
+
+[ -r /run/zbm-runtime/kcl.env ] && source /run/zbm-runtime/kcl.env
+
+case "${ZBM_AUTOSTART:-n}" in
+  1|y|Y|yes|YES|true|TRUE|on|ON) ;;
+  *)
+    : > /run/zbm-progress/zbm-autoboot.disabled
+    printf '<6>%s\n' '[zbm-autoboot] disabled by owrt.autostart' >/dev/kmsg 2>/dev/null || true
+    echo "[zbm-autoboot] disabled by owrt.autostart"
+    exit 0
+    ;;
+esac
+
 : > /run/zbm-progress/zbm-autoboot.begin
 rm -f /run/zbm-autoboot.done
 rm -f /run/zbm-autoboot.failed
@@ -23,15 +43,6 @@ cleanup() {
   touch /run/zbm-autoboot.done
 }
 trap cleanup EXIT INT TERM
-
-if [ -x /usr/bin/zbm-kcl-apply ]; then
-  : > /run/zbm-progress/zbm-autoboot.apply-kcl
-  printf '<6>%s\n' '[zbm-autoboot] applying kcl' >/dev/kmsg 2>/dev/null || true
-  echo "[zbm-autoboot] applying kcl"
-  /usr/bin/zbm-kcl-apply >/tmp/zbm-kcl-apply.log 2>&1 || true
-fi
-
-[ -r /run/zbm-runtime/kcl.env ] && source /run/zbm-runtime/kcl.env
 
 if [ -x /usr/bin/zbm-network-up ]; then
   : > /run/zbm-progress/zbm-autoboot.apply-network
