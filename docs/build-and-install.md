@@ -74,6 +74,10 @@ The UKI contains:
 - recovery networking and repair tools, including `apk`, `tcpdump`, `ip`,
   `ss`, `conntrack`, `ethtool`, `iperf3`, `mtr`, `dig`, `nc`, `socat`,
   `arping`, `tracepath`, and `ping`
+- wired 10GbE support: Marvell AQtion AQN-107 (`atlantic`, including the
+  ThinkStation P620 onboard NIC); Intel `ixgbe`/`ixgbevf` (82598/82599,
+  X520/X540/X550), `i40e`/`iavf` (X710/XL710/X722), and `ice` (E810, with
+  its DDP firmware)
 
 Operational policy is therefore carried by `rEFInd` options.
 

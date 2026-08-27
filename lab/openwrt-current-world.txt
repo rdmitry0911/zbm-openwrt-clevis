@@ -25,6 +25,7 @@ grub2-efi
 gummiboot
 hostapd-common
 i915-firmware-dmc
+ice-firmware
 ip-full
 iperf3
 iputils-arping
@@ -59,6 +60,7 @@ kmod-amazon-ena
 kmod-amd-xgbe
 kmod-ata-ahci
 kmod-ata-core
+kmod-atlantic
 kmod-backlight
 kmod-bnx2
 kmod-button-hotplug
@@ -111,11 +113,15 @@ kmod-fs-vfat
 kmod-hwmon-core
 kmod-i2c-algo-bit
 kmod-i2c-core
+kmod-i40e
+kmod-iavf
+kmod-ice
 kmod-igb
 kmod-igc
 kmod-input-core
 kmod-iwlwifi
 kmod-ixgbe
+kmod-ixgbevf
 kmod-keys-encrypted
 kmod-keys-trusted
 kmod-lib-crc-ccitt

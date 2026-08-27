@@ -814,6 +814,13 @@ validate_rootfs() {
     "/lib/modules/${krel}/iwlmvm.ko" \
     "/lib/firmware/${EXTRA_IWLWIFI_FIRMWARE_NAME}" \
     "/lib/firmware/${EXTRA_IWLWIFI_PNVM_NAME}" \
+    "/lib/modules/${krel}/atlantic.ko" \
+    "/lib/modules/${krel}/i40e.ko" \
+    "/lib/modules/${krel}/iavf.ko" \
+    "/lib/modules/${krel}/ice.ko" \
+    "/lib/modules/${krel}/ixgbe.ko" \
+    "/lib/modules/${krel}/ixgbevf.ko" \
+    "/lib/firmware/intel/ice/ddp/ice.pkg" \
     "/lib/modules/${krel}/usbnet.ko" \
     "/lib/modules/${krel}/asix.ko" \
     "/lib/modules/${krel}/ax88179_178a.ko" \
@@ -917,7 +924,8 @@ EOF
 }
 
 validate_uki_initrd() {
-  local rootdir krel work mod root_mod uki_mod root_hash uki_hash
+  local rootdir krel work path root_path uki_path root_hash uki_hash
+  local -a required_paths
 
   rootdir="$(find_ib_rootfs_dir)"
   [ -n "${rootdir}" ] || die "cannot locate Image Builder rootfs"
@@ -927,24 +935,34 @@ validate_uki_initrd() {
   rm -rf "${work}"
   mkdir -p "${work}/extract"
 
+  required_paths=(
+    "lib/modules/${krel}/tpm_crb.ko"
+    "lib/modules/${krel}/tpm_crb.good.ko"
+    "lib/modules/${krel}/atlantic.ko"
+    "lib/modules/${krel}/i40e.ko"
+    "lib/modules/${krel}/iavf.ko"
+    "lib/modules/${krel}/ice.ko"
+    "lib/modules/${krel}/ixgbe.ko"
+    "lib/modules/${krel}/ixgbevf.ko"
+    "lib/firmware/intel/ice/ddp/ice.pkg"
+  )
+
   cp -f "${UKI}" "${work}/uki.efi"
   run objcopy --dump-section ".initrd=${work}/initrd.gz" "${work}/uki.efi"
   (
     cd "${work}/extract"
-    gzip -dc "${work}/initrd.gz" | cpio -id --quiet \
-      "lib/modules/${krel}/tpm_crb.ko" \
-      "lib/modules/${krel}/tpm_crb.good.ko"
+    gzip -dc "${work}/initrd.gz" | cpio -id --quiet "${required_paths[@]}"
   )
 
-  for mod in tpm_crb.ko tpm_crb.good.ko; do
-    root_mod="${rootdir}/lib/modules/${krel}/${mod}"
-    uki_mod="${work}/extract/lib/modules/${krel}/${mod}"
-    [ -f "${root_mod}" ] || die "missing rootfs ${mod}: ${root_mod}"
-    [ -f "${uki_mod}" ] || die "missing ${mod} in UKI initrd"
-    root_hash="$(sha256sum "${root_mod}" | awk '{print $1}')"
-    uki_hash="$(sha256sum "${uki_mod}" | awk '{print $1}')"
+  for path in "${required_paths[@]}"; do
+    root_path="${rootdir}/${path}"
+    uki_path="${work}/extract/${path}"
+    [ -f "${root_path}" ] || die "missing rootfs path: ${root_path}"
+    [ -f "${uki_path}" ] || die "missing ${path} in UKI initrd"
+    root_hash="$(sha256sum "${root_path}" | awk '{print $1}')"
+    uki_hash="$(sha256sum "${uki_path}" | awk '{print $1}')"
     if [ "${root_hash}" != "${uki_hash}" ]; then
-      die "UKI initrd ${mod} mismatch: ${uki_hash}, expected ${root_hash}"
+      die "UKI initrd ${path} mismatch: ${uki_hash}, expected ${root_hash}"
     fi
   done
 }
