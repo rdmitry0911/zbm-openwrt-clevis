@@ -160,3 +160,9 @@ One practical bonus of this split model is that the target kernel,
 inside the encrypted ZFS root. Updating the target system can therefore change
 `vmlinuz` or `initramfs` without forcing a new manual unlock, as long as the
 measured OpenWrt boot runtime itself did not change.
+
+## Related project
+
+[escrow-box](https://github.com/abx-takt/escrow-box) is our prototype for TPM-sealed
+conditional release of secrets, including source-code escrow with a reproducible-build check.
+See the [project overview and limitations](https://taktcycles.com/projects/escrow-box.html).
