@@ -71,7 +71,13 @@ else
 fi
 TPM_CRB_KO="${TPM_CRB_KO:-}"
 KEXEC_TOOLS_PATCH_DIR="${KEXEC_TOOLS_PATCH_DIR:-${TOPDIR}/patches/kexec-tools}"
-KEXEC_TOOLS_VERSION="${KEXEC_TOOLS_VERSION:-2.0.28}"
+if [ "${ZBM_ARCH}" = x86_64 ]; then
+  KEXEC_TOOLS_VERSION="${KEXEC_TOOLS_VERSION:-2.0.28}"
+else
+  # 2.0.31+ unpacks zstd EFI zboot kernels (Proxmox VE arm64, Debian arm64)
+  KEXEC_TOOLS_VERSION="${KEXEC_TOOLS_VERSION:-2.0.32}"
+  KEXEC_TOOLS_HASH="${KEXEC_TOOLS_HASH:-8f81422a5fd2362cf6cb001b511e535565ed0f32c2f4451fb5eb68fed6710a5d}"
+fi
 KEXEC_TOOLS_URL="${KEXEC_TOOLS_URL:-https://cdn.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_TOOLS_VERSION}.tar.xz}"
 KEXEC_TOOLS_HASH="${KEXEC_TOOLS_HASH:-d2f0ef872f39e2fe4b1b01feb62b0001383207239b9f8041f98a95564161d053}"
 PATCHED_KEXEC="${PATCHED_KEXEC:-${BUILDDIR}/kexec-tools-${KEXEC_TOOLS_VERSION}-patched/install/usr/sbin/kexec}"
@@ -342,20 +348,27 @@ build_patched_kexec() {
 
   for patch_file in "${KEXEC_TOOLS_PATCH_DIR}"/*.patch; do
     [ -f "${patch_file}" ] || continue
+    if [ "${ZBM_ARCH}" != x86_64 ]; then
+      log "skipping x86 kexec-tools patch for ${ZBM_ARCH}: ${patch_file}"
+      continue
+    fi
     log "applying kexec-tools patch: ${patch_file}"
     ( cd "${builddir}" && patch -p1 < "${patch_file}" )
   done
 
-  if [ "${ZBM_ARCH}" != x86_64 ] && [ ! -e "${KEXEC_SYSROOT}/zlib/libz.a" ]; then
+  if [ "${ZBM_ARCH}" != x86_64 ] && [ ! -e "${KEXEC_SYSROOT}/zlib/libzstd.a" ]; then
     # zlib headers and libz.a of the target architecture for the cross build
     log "creating ${ZBM_ARCH} zlib sysroot for kexec-tools"
     rm -rf "${KEXEC_SYSROOT}"
-    debian_extract "$([ "${ZBM_ARCH}" = aarch64 ] && echo arm64 || echo "${ZBM_ARCH}")" zlib1g-dev "${KEXEC_SYSROOT}"
-    # only zlib itself: the cross toolchain keeps its own libc headers and libs
+    debian_extract "$([ "${ZBM_ARCH}" = aarch64 ] && echo arm64 || echo "${ZBM_ARCH}")" zlib1g-dev,libzstd-dev "${KEXEC_SYSROOT}"
+    # only zlib and zstd (static): the cross toolchain keeps its own libc
     mkdir -p "${KEXEC_SYSROOT}/zlib/include"
-    cp "${KEXEC_SYSROOT}/usr/include/zlib.h" "${KEXEC_SYSROOT}/usr/include/zconf.h" "${KEXEC_SYSROOT}/zlib/include/" 2>/dev/null \
-      || cp "${KEXEC_SYSROOT}/usr/include/zlib.h" "${KEXEC_SYSROOT}/usr/include/${ZBM_ARCH}-linux-gnu/zconf.h" "${KEXEC_SYSROOT}/zlib/include/"
-    cp "${KEXEC_SYSROOT}/usr/lib/${ZBM_ARCH}-linux-gnu/libz.a" "${KEXEC_SYSROOT}/zlib/"
+    cp "${KEXEC_SYSROOT}/usr/include/zlib.h" "${KEXEC_SYSROOT}/usr/include/zstd.h" "${KEXEC_SYSROOT}/usr/include/zstd_errors.h" \
+      "${KEXEC_SYSROOT}/zlib/include/"
+    cp "${KEXEC_SYSROOT}/usr/include/zconf.h" "${KEXEC_SYSROOT}/zlib/include/" 2>/dev/null \
+      || cp "${KEXEC_SYSROOT}/usr/include/${ZBM_ARCH}-linux-gnu/zconf.h" "${KEXEC_SYSROOT}/zlib/include/"
+    cp "${KEXEC_SYSROOT}/usr/lib/${ZBM_ARCH}-linux-gnu/libz.a" "${KEXEC_SYSROOT}/usr/lib/${ZBM_ARCH}-linux-gnu/libzstd.a" \
+      "${KEXEC_SYSROOT}/zlib/"
   fi
   log "building patched kexec-tools ${KEXEC_TOOLS_VERSION}"
   (
@@ -375,10 +388,11 @@ build_patched_kexec() {
         --prefix=/usr \
         --sbindir=/usr/sbin \
         --with-zlib \
+        --with-zstd \
         --without-lzma \
         CC="${ZBM_ARCH}-linux-gnu-gcc" \
         CPPFLAGS="-I${KEXEC_SYSROOT}/zlib/include" \
-        LIBS="${KEXEC_SYSROOT}/zlib/libz.a"
+        LDFLAGS="-L${KEXEC_SYSROOT}/zlib"
     fi
     make -j"${JOBS}"
     make DESTDIR="${install_dir}" install
