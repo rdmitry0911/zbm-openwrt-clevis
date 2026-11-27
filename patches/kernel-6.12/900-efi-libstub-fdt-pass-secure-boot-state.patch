@@ -1,0 +1,19 @@
+--- a/drivers/firmware/efi/libstub/fdt.c
++++ b/drivers/firmware/efi/libstub/fdt.c
+@@ -120,6 +120,16 @@
+ 	if (status)
+ 		goto fdt_set_fail;
+ 
++	/*
++	 * Ubuntu-derived kernels (Proxmox VE's among them) require this one
++	 * next to the memory map parameters: without it they find no EFI memory
++	 * map and panic early. kexec_file passes /chosen on to them as is.
++	 */
++	fdt_val32 = cpu_to_fdt32(efi_get_secureboot());
++	status = fdt_setprop_var(fdt, node, "linux,uefi-secure-boot", fdt_val32);
++	if (status)
++		goto fdt_set_fail;
++
+ 	if (IS_ENABLED(CONFIG_RANDOMIZE_BASE) && !efi_nokaslr) {
+ 		efi_status_t efi_status;
+ 

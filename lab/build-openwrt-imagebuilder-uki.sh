@@ -1119,7 +1119,10 @@ build_kexec_kernel() {
   [ -n "${kver}" ] && [ -n "${khash}" ] || die "cannot read the kernel version from the SDK"
   w="${BUILDDIR}/kernel-kexec"
   KEXEC_KERNEL="${w}/linux-${kver}/arch/${KERNEL_ARCH_NAME}/boot/Image"
-  if [ -f "${KEXEC_KERNEL}" ] && [ "${w}/.stamp" -nt "${kdir}/.config" ]; then
+  # this repository's own kernel patches (patches/kernel-<major.minor>)
+  local own="${TOPDIR}/patches/kernel-${kver%.*}" stamp
+  stamp="${w}/.stamp-$(cat "${kdir}/.config" "${own}"/*.patch 2>/dev/null | sha256sum | cut -c1-16)"
+  if [ -f "${KEXEC_KERNEL}" ] && [ -f "${stamp}" ]; then
     log "using cached kexec kernel: ${KEXEC_KERNEL}"
     return 0
   fi
@@ -1144,9 +1147,10 @@ build_kexec_kernel() {
   [ ! -d "${o}/${OWRT_TARGET%%/*}/files" ] || cp -a "${o}/${OWRT_TARGET%%/*}/files/." "${l}/"
   [ ! -d "${o}/generic/files" ] || cp -a "${o}/generic/files/." "${l}/"
   [ ! -d "${o}/generic/files-${pv}" ] || cp -a "${o}/generic/files-${pv}/." "${l}/"
-  for d in "generic/backport-${pv}" "generic/pending-${pv}" "generic/hack-${pv}" "${OWRT_TARGET%%/*}/patches-${pv}"; do
-    [ -d "${o}/${d}" ] || continue
-    for p in $(find "${o}/${d}" -maxdepth 1 -name '*.patch' | sort); do
+  for d in "${o}/generic/backport-${pv}" "${o}/generic/pending-${pv}" "${o}/generic/hack-${pv}" \
+           "${o}/${OWRT_TARGET%%/*}/patches-${pv}" "${own}"; do
+    [ -d "${d}" ] || continue
+    for p in $(find "${d}" -maxdepth 1 -name '*.patch' | sort); do
       patch -d "${l}" -p1 -s -N --no-backup-if-mismatch < "${p}" || die "kernel patch failed: ${p}"
     done
   done
@@ -1170,7 +1174,7 @@ build_kexec_kernel() {
     | sed 's/^/  unexpected config change: /' | tee "${w}/config-diff" | head -n 5 || true
   [ ! -s "${w}/config-diff" ] || die "the kexec kernel's config drifted from the release kernel's"
   rm -rf "${o%/target/linux}" "${l:?}"/{Documentation,tools/testing}
-  touch "${w}/.stamp"
+  touch "${stamp}"
 }
 
 build_uki() {
