@@ -722,7 +722,7 @@ make_donor_rootfs() {
 }
 
 install_donor_glibc_tools() {
-  local tool fallback_root
+  local tool fallback_root ld_src
 
   make_donor_rootfs
 
@@ -754,10 +754,14 @@ install_donor_glibc_tools() {
     cp -aL "${HOST_TOOL_ROOTFS}/${DONOR_LIBDIR}" "${FILES_DIR}/lib/" 2>/dev/null \
       || cp -a "${HOST_TOOL_ROOTFS}/${DONOR_LIBDIR}" "${FILES_DIR}/lib/"
   fi
-  if [ -e "${HOST_TOOL_ROOTFS}/${DONOR_LD}" ]; then
-    mkdir -p "${FILES_DIR}/$(dirname "${DONOR_LD}")"
-    cp -aL "${HOST_TOOL_ROOTFS}/${DONOR_LD}" "${FILES_DIR}/${DONOR_LD}"
-  fi
+  # The tools' ELF interpreter. A usr-merged Debian donor has no lib64/ (the
+  # x86-64 loader is in usr/lib64), so take the real file from the multiarch
+  # directory; without it every donor tool is "not found" and preinit hangs.
+  ld_src="${HOST_TOOL_ROOTFS}/${DONOR_LD}"
+  [ -e "${ld_src}" ] || ld_src="${HOST_TOOL_ROOTFS}/${DONOR_LIBDIR}/$(basename "${DONOR_LD}")"
+  [ -e "${ld_src}" ] || die "glibc loader ${DONOR_LD} not found in donor ${HOST_TOOL_ROOTFS}"
+  mkdir -p "${FILES_DIR}/$(dirname "${DONOR_LD}")"
+  cp -aL "${ld_src}" "${FILES_DIR}/${DONOR_LD}"
 }
 
 install_repo_overlay() {
