@@ -798,6 +798,8 @@ prepare_files_overlay() {
   install_extra_kernel_modules
   install_patched_kexec
   install_zbm_setfont
+  # git's semantics (644/755), whatever the checkout's umask/ACL made of it
+  chmod -R u+rwX,go+rX,go-w "${FILES_DIR}"
 }
 
 sanitize_package_name() {
@@ -927,10 +929,16 @@ find_ib_rootfs_dir() {
 }
 
 create_initramfs() {
-  local rootdir initfile
+  local rootdir initfile unreadable f
 
   rootdir="$(find_ib_rootfs_dir)"
   [ -n "${rootdir}" ] || die "cannot locate Image Builder rootfs"
+  # non-root daemons (ubusd, dnsmasq, ntpd) need the libraries and passwd
+  unreadable="$(find "${rootdir}/lib" "${rootdir}/usr/lib" -maxdepth 1 -type f -name '*.so*' ! -perm -o=r | head -n 3)"
+  for f in etc/passwd etc/group sbin/ubusd; do
+    [ ! -f "${rootdir}/${f}" ] || [ -n "$(find "${rootdir}/${f}" -perm -o=r)" ] || unreadable="${unreadable} ${f}"
+  done
+  [ -z "${unreadable// /}" ] || die "rootfs files not world-readable (default ACL on ${BUILDDIR}?):${unreadable}"
   initfile="${IB_DIR}/target/linux/generic/other-files/init"
   [ -f "${initfile}" ] || die "missing OpenWrt initramfs init: ${initfile}"
 
@@ -1200,6 +1208,14 @@ main() {
   done
 
   mkdir -p "${BUILDDIR}" "${SRCDIR}" "${OUTDIR}"
+  # Image files must get the modes their packages ask for. A default ACL on
+  # the build directory overrides the umask (other::--x left libc.so and
+  # /etc/passwd unreadable to the ubus user: ubusd never came up and procd
+  # waited for it forever, with nothing on the console).
+  umask 022
+  if command -v setfacl >/dev/null 2>&1; then
+    setfacl -R -k "${BUILDDIR}" "${OUTDIR}" 2>/dev/null || true
+  fi
 
   log "versions: OpenWrt=${OPENWRT_VERSION} ZFSBootMenu=${ZFSBOOTMENU_REF} Clevis=${CLEVIS_REF} OpenZFS=${OPENZFS_REF}"
   prepare_openwrt_tools
