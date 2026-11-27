@@ -526,7 +526,12 @@ build_openzfs() {
   (
     set -Eeuo pipefail
     export STAGING_DIR="${SDK_DIR}/staging_dir"
-    export PATH="${toolchain}/bin:${PATH}"
+    # OpenZFS asks curl-config for libcurl (keylocation=https): the host's
+    # answer is wrong for the target, and ZBM loads keys from files
+    mkdir -p "${BUILDDIR}/no-host-config"
+    printf '#!/bin/sh\nexit 1\n' > "${BUILDDIR}/no-host-config/curl-config"
+    chmod 755 "${BUILDDIR}/no-host-config/curl-config"
+    export PATH="${BUILDDIR}/no-host-config:${toolchain}/bin:${PATH}"
     export PKG_CONFIG_LIBDIR="${target}/usr/lib/pkgconfig:${target}/usr/share/pkgconfig"
     export PKG_CONFIG_PATH="${PKG_CONFIG_LIBDIR}"
     export CPPFLAGS="-I${target}/usr/include -I${target}/usr/include/tirpc"
