@@ -1075,6 +1075,11 @@ build_uki() {
   local kernel osrel cmdline krel
 
   kernel="${IB_DIR}/bin/targets/${OWRT_TARGET}/openwrt-${OPENWRT_VERSION}-${OWRT_TARGET_DASH}-generic-kernel.bin"
+  if [ ! -f "${kernel}" ]; then
+    # a rootfs-only build writes no bin/targets; the Image Builder carries the
+    # same kernel (the release's generic-kernel.bin) in its build dir
+    kernel="$(find "${IB_DIR}/build_dir" -path "*/${OWRT_SUBTARGET_DIR}/generic-kernel.bin" -type f | head -n 1)"
+  fi
   [ -f "${kernel}" ] || die "missing Image Builder kernel: ${kernel}"
   [ -f "${INITRD}" ] || die "missing initramfs: ${INITRD}"
   if [ ! -f "${STUB}" ] && [ "${ZBM_ARCH}" != x86_64 ]; then
