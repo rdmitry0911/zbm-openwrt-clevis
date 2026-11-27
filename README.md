@@ -81,6 +81,22 @@ Default output:
 dist/vmlinuz-openwrt-25.12.4-x86-64-generic-zbm-clevis-imagebuilder.efi
 ```
 
+Other architectures and build hosts:
+
+- `ZBM_ARCH=aarch64` builds an `armsr/armv8` UKI
+  (`vmlinuz-openwrt-25.12.4-armsr-armv8-generic-zbm-clevis-imagebuilder.efi`).
+  The donor glibc tools come from Debian packages of the target architecture
+  (also on x86_64 when `/tmp/openwrt-zbm-rootfs` is absent). The armsr release
+  kernel has neither kexec syscall nor an initramfs decompressor, so the build
+  recompiles it from the SDK's `.config` and OpenWrt's patches with
+  `CONFIG_KEXEC_FILE` (module ABI unchanged) plus `patches/kernel-6.12`, and
+  packs the initramfs uncompressed. Boot it with `maxcpus=1`: without CPU
+  hotplug, kexec needs a single online CPU.
+- A default ACL on the build directory would override the umask and leave
+  libraries unreadable to non-root daemons (procd then waits for ubusd
+  forever); the build drops default ACLs from `BUILDDIR` and fails if the
+  rootfs libraries or `/etc/passwd` are not world-readable.
+
 Create the local QEMU target disk once:
 
 ```bash
