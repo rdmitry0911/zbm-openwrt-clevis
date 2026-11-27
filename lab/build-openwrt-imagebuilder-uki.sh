@@ -1100,6 +1100,79 @@ validate_rootfs() {
   [ "${missing}" = "0" ] || die "rootfs validation failed"
 }
 
+# The armsr release kernel has no kexec syscall at all ("kexec_load failed:
+# Function not implemented"), so ZFSBootMenu cannot hand over to the booted
+# environment's kernel. Rebuild that same kernel - the SDK's .config, OpenWrt's
+# patches for the tag, the SDK toolchain - with CONFIG_KEXEC_FILE only: plain
+# KEXEC needs PM_SLEEP_SMP, which changes struct device and with it the ABI of
+# every module the Image Builder installs. Without CPU hotplug the handover
+# needs one online CPU: boot ZFSBootMenu with maxcpus=1.
+build_kexec_kernel() {
+  local w kdir kver khash owrt t make_args
+
+  KEXEC_KERNEL=
+  [ "${ZBM_KEXEC_KERNEL:-$([ "${ZBM_ARCH}" = aarch64 ] && echo 1 || echo 0)}" = 1 ] || return 0
+  kdir="$(find_sdk_kernel_dir)"
+  [ -n "${kdir}" ] && [ -f "${kdir}/.config" ] || die "missing SDK kernel config"
+  kver="$(sed -n 's/^LINUX_VERSION-\([0-9.]*\) = \(\.[0-9]*\)$/\1\2/p' "${SDK_DIR}"/target/linux/generic/kernel-* | sort -V | tail -n 1)"
+  khash="$(sed -n "s/^LINUX_KERNEL_HASH-${kver} = //p" "${SDK_DIR}"/target/linux/generic/kernel-*)"
+  [ -n "${kver}" ] && [ -n "${khash}" ] || die "cannot read the kernel version from the SDK"
+  w="${BUILDDIR}/kernel-kexec"
+  KEXEC_KERNEL="${w}/linux-${kver}/arch/${KERNEL_ARCH_NAME}/boot/Image"
+  if [ -f "${KEXEC_KERNEL}" ] && [ "${w}/.stamp" -nt "${kdir}/.config" ]; then
+    log "using cached kexec kernel: ${KEXEC_KERNEL}"
+    return 0
+  fi
+
+  log "building the ${OWRT_TARGET} kernel ${kver} with CONFIG_KEXEC_FILE"
+  download_checked "https://cdn.kernel.org/pub/linux/kernel/v${kver%%.*}.x/linux-${kver}.tar.xz" \
+    "${BUILDDIR}/downloads/linux-${kver}.tar.xz" "${khash}"
+  download "https://github.com/openwrt/openwrt/archive/refs/tags/v${OPENWRT_VERSION}.tar.gz" \
+    "${BUILDDIR}/downloads/openwrt-v${OPENWRT_VERSION}.tar.gz"
+  rm -rf "${w}"
+  mkdir -p "${w}/staging/usr/include" "${w}/staging/usr/lib"
+  tar -C "${w}" -xzf "${BUILDDIR}/downloads/openwrt-v${OPENWRT_VERSION}.tar.gz" \
+    "openwrt-${OPENWRT_VERSION}/target/linux/generic" "openwrt-${OPENWRT_VERSION}/target/linux/${OWRT_TARGET%%/*}"
+  local o="${w}/openwrt-${OPENWRT_VERSION}/target/linux" l="${w}/linux-${kver}" pv="${kver%.*}" d p
+  # the patches must be the ones the SDK's kernel was built with
+  for d in backport pending hack; do
+    diff -rq "${o}/generic/${d}-${pv}" "${SDK_DIR}/target/linux/generic/${d}-${pv}" >/dev/null \
+      || die "OpenWrt v${OPENWRT_VERSION} generic/${d}-${pv} differs from the SDK's"
+  done
+  tar -C "${w}" -xJf "${BUILDDIR}/downloads/linux-${kver}.tar.xz"
+  # OpenWrt's Kernel/Patch/Default: target files, generic files, then the patches
+  [ ! -d "${o}/${OWRT_TARGET%%/*}/files" ] || cp -a "${o}/${OWRT_TARGET%%/*}/files/." "${l}/"
+  [ ! -d "${o}/generic/files" ] || cp -a "${o}/generic/files/." "${l}/"
+  [ ! -d "${o}/generic/files-${pv}" ] || cp -a "${o}/generic/files-${pv}/." "${l}/"
+  for d in "generic/backport-${pv}" "generic/pending-${pv}" "generic/hack-${pv}" "${OWRT_TARGET%%/*}/patches-${pv}"; do
+    [ -d "${o}/${d}" ] || continue
+    for p in $(find "${o}/${d}" -maxdepth 1 -name '*.patch' | sort); do
+      patch -d "${l}" -p1 -s -N --no-backup-if-mismatch < "${p}" || die "kernel patch failed: ${p}"
+    done
+  done
+
+  t="$(find_sdk_toolchain_dir)"
+  make_args=(ARCH="${KERNEL_ARCH_NAME}" CROSS_COMPILE="$(sdk_cross_prefix)" LOCALVERSION=
+    KBUILD_BUILD_USER=builder KBUILD_BUILD_HOST=buildhost KBUILD_BUILD_VERSION=0)
+  cp "${kdir}/.config" "${l}/.config"
+  (
+    export STAGING_DIR="${w}/staging" PATH="${t}/bin:${PATH}:${SDK_DIR}/staging_dir/host/bin"
+    cd "${l}"
+    ./scripts/config --enable KEXEC_FILE --disable CRASH_DUMP --set-str INITRAMFS_SOURCE ""
+    make "${make_args[@]}" olddefconfig >/dev/null
+    grep -qx 'CONFIG_KEXEC_FILE=y' .config || die "CONFIG_KEXEC_FILE did not stick"
+    make "${make_args[@]}" -j"${JOBS}" Image
+  ) > "${w}/build.log" 2>&1 || die "kernel build failed, see ${w}/build.log"
+  [ -f "${KEXEC_KERNEL}" ] || die "kernel build produced no ${KEXEC_KERNEL}"
+  # only kexec-related options may differ from the release kernel's
+  diff <(grep '^CONFIG_' "${kdir}/.config" | sort) <(grep '^CONFIG_' "${l}/.config" | sort) \
+    | sed -n 's/^[<>] //p' | grep -vE '^CONFIG_(KEXEC_CORE|KEXEC_FILE|ARCH_SELECTS_KEXEC_FILE|TRANS_TABLE|CRYPTO_SHA256|INITRAMFS_[A-Z_]*)=' \
+    | sed 's/^/  unexpected config change: /' | tee "${w}/config-diff" | head -n 5 || true
+  [ ! -s "${w}/config-diff" ] || die "the kexec kernel's config drifted from the release kernel's"
+  rm -rf "${o%/target/linux}" "${l:?}"/{Documentation,tools/testing}
+  touch "${w}/.stamp"
+}
+
 build_uki() {
   local kernel osrel cmdline krel
 
@@ -1110,6 +1183,8 @@ build_uki() {
     kernel="$(find "${IB_DIR}/build_dir" -path "*/${OWRT_SUBTARGET_DIR}/generic-kernel.bin" -type f | head -n 1)"
   fi
   [ -f "${kernel}" ] || die "missing Image Builder kernel: ${kernel}"
+  build_kexec_kernel
+  [ -z "${KEXEC_KERNEL}" ] || kernel="${KEXEC_KERNEL}"
   [ -f "${INITRD}" ] || die "missing initramfs: ${INITRD}"
   if [ ! -f "${STUB}" ] && [ "${ZBM_ARCH}" != x86_64 ]; then
     # the target architecture's stub, from Debian's systemd-boot-efi
