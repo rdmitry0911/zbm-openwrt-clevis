@@ -836,11 +836,45 @@ imagebuilder_packages() {
   } | sort -u | tr '\n' ' '
 }
 
+ib_available_packages() {
+  # Names of the packages the Image Builder's feeds offer for this target.
+  local mk apk
+
+  mk="${BUILDDIR}/print-apk.mk"
+  printf 'print-apk:\n\t@echo $(APK) --arch $(ARCH_PACKAGES)\n' > "${mk}"
+  apk="$(STAGING_DIR_HOST="${IB_DIR}/staging_dir/host" make -s -C "${IB_DIR}" -f Makefile -f "${mk}" print-apk | tail -n 1)"
+  # run apk itself (without the fakeroot wrapper in front of it)
+  apk="${IB_DIR}/staging_dir/host/bin/apk${apk#*/staging_dir/host/bin/apk}"
+  # shellcheck disable=SC2086
+  ${apk} list --available 2>/dev/null | awk '{n = $1; sub(/-[0-9][^-]*(-r[0-9]+)?$/, "", n); print n}' | sort -u
+}
+
+filter_target_packages() {
+  # The package list comes from an x86 system; keep what this target has.
+  local avail pkg name kept dropped
+
+  run env STAGING_DIR_HOST="${IB_DIR}/staging_dir/host" make -s -C "${IB_DIR}" USER_PROFILE=generic package_reload >&2
+  avail="${BUILDDIR}/available-packages.txt"
+  ib_available_packages > "${avail}"
+  [ -s "${avail}" ] || die "cannot list the Image Builder's packages"
+  kept=() dropped=()
+  for pkg in $1; do
+    name="${pkg#-}"
+    if grep -qxF "${name}" "${avail}"; then kept+=("${pkg}"); else dropped+=("${pkg}"); fi
+  done
+  log "not available for ${ZBM_ARCH}, left out: ${dropped[*]:-none}" >&2
+  printf '%s ' "${kept[@]}"
+}
+
 build_imagebuilder_rootfs() {
   local packages rootfs_partsize
 
   [ -f "${WORLD_REF}" ] || die "missing package reference list: ${WORLD_REF}"
   packages="$(imagebuilder_packages)"
+  if [ "${ZBM_ARCH}" != x86_64 ]; then
+    # TPM over MMIO/SPI (arm64 boards, QEMU virt) and common arm64 NICs/disks
+    packages="${packages} kmod-tpm kmod-tpm-tis kmod-tpm-tis-spi kmod-nvme kmod-e1000e kmod-igb kmod-ixgbe kmod-i40e kmod-tg3 kmod-r8169 kmod-virtio-net"
+  fi
   rootfs_partsize="${ROOTFS_PARTSIZE:-512}"
 
   if [ "${IMAGEBUILDER_FULL_IMAGE:-0}" = "1" ]; then
@@ -856,6 +890,7 @@ build_imagebuilder_rootfs() {
   tdir="$(find "${IB_DIR}/build_dir" -maxdepth 1 -type d -name 'target-*' | sort | tail -n 1)"
   [ -n "${tdir}" ] || die "cannot locate Image Builder target build dir"
   mkdir -p "${IB_DIR}/dl" "${IB_DIR}/tmp" "${IB_DIR}/bin" "${tdir}/root-${OWRT_TARGET%%/*}"
+  [ "${ZBM_ARCH}" = x86_64 ] || packages="$(filter_target_packages "${packages}")"
   run env STAGING_DIR_HOST="${IB_DIR}/staging_dir/host" make -C "${IB_DIR}" \
     USER_PROFILE=generic \
     USER_PACKAGES="${packages}" \
