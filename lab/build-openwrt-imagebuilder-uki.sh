@@ -1143,7 +1143,7 @@ validate_uki_initrd() {
   else
     required_paths=(
       "lib/modules/${krel}/tpm_tis.ko"
-      "lib/modules/${krel}/nvme.ko"
+      "lib/modules/${krel}/tpm_tis_core.ko"
       "usr/sbin/kexec"
     )
   fi
