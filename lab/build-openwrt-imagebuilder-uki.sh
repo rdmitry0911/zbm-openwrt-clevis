@@ -850,7 +850,8 @@ ib_available_packages() {
 }
 
 filter_target_packages() {
-  # The package list comes from an x86 system; keep what this target has.
+  # Keep what this target's feeds have (the reference list comes from an x86
+  # system; optional extras may be missing on a target).
   local avail pkg name kept dropped
 
   run env STAGING_DIR_HOST="${IB_DIR}/staging_dir/host" make -s -C "${IB_DIR}" USER_PROFILE=generic package_reload >&2
@@ -877,6 +878,12 @@ build_imagebuilder_rootfs() {
     # TPM over MMIO/SPI (arm64 boards, QEMU virt) and common arm64 NICs/disks
     packages="${packages} kmod-tpm kmod-tpm-tis kmod-tpm-tis-spi kmod-nvme kmod-e1000e kmod-igb kmod-ixgbe kmod-i40e kmod-tg3 kmod-r8169 kmod-virtio-net"
   fi
+  # Laptop Wi-Fi beyond Intel: on a machine whose only uplink is Wi-Fi the boot
+  # environment must get online itself (ssh unlock, notifications)
+  packages="${packages} ${ZBM_WIFI_PACKAGES:-kmod-mt7921e kmod-mt7921-firmware kmod-mt7922-firmware \
+    kmod-mt7925e kmod-mt7925-firmware kmod-rtw89-8851be kmod-rtw89-8852be kmod-rtw89-8852ce kmod-rtw89-8922ae \
+    kmod-rtw88-8821ce kmod-rtw88-8822be kmod-rtw88-8822ce kmod-ath11k-pci ath11k-firmware-wcn6855 \
+    ath11k-firmware-qca2066 ath11k-firmware-qca6390 kmod-ath12k ath12k-firmware-wcn7850 kmod-brcmfmac}"
   rootfs_partsize="${ROOTFS_PARTSIZE:-512}"
 
   if [ "${IMAGEBUILDER_FULL_IMAGE:-0}" = "1" ]; then
@@ -892,7 +899,7 @@ build_imagebuilder_rootfs() {
   tdir="$(find "${IB_DIR}/build_dir" -maxdepth 1 -type d -name 'target-*' | sort | tail -n 1)"
   [ -n "${tdir}" ] || die "cannot locate Image Builder target build dir"
   mkdir -p "${IB_DIR}/dl" "${IB_DIR}/tmp" "${IB_DIR}/bin" "${tdir}/root-${OWRT_TARGET%%/*}"
-  [ "${ZBM_ARCH}" = x86_64 ] || packages="$(filter_target_packages "${packages}")"
+  packages="$(filter_target_packages "${packages}")"
   run env STAGING_DIR_HOST="${IB_DIR}/staging_dir/host" make -C "${IB_DIR}" \
     USER_PROFILE=generic \
     USER_PACKAGES="${packages}" \
