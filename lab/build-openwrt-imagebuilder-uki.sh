@@ -17,6 +17,7 @@ CONFIG_TARGET_x86_64_DEVICE_generic=y'
     KERNEL_ARCH_NAME=x86 EFI_ARCH=x64 EFI_STUB_NAME=linuxx64.efi.stub
     DONOR_LIBDIR=lib/x86_64-linux-gnu DONOR_LD=lib64/ld-linux-x86-64.so.2
     TPM_EXTRA_MODULE=tpm_crb
+    INITRD_COMPRESS_DEFAULT=gzip
     ;;
   aarch64)
     OWRT_TARGET=armsr/armv8 OWRT_TARGET_DASH=armsr-armv8 OWRT_SUBTARGET_DIR=linux-armsr_armv8
@@ -26,6 +27,9 @@ CONFIG_TARGET_armsr_armv8_DEVICE_generic=y'
     KERNEL_ARCH_NAME=arm64 EFI_ARCH=aa64 EFI_STUB_NAME=linuxaa64.efi.stub
     DONOR_LIBDIR=lib/aarch64-linux-gnu DONOR_LD=lib/ld-linux-aarch64.so.1
     TPM_EXTRA_MODULE=
+    # the armsr kernel has no CONFIG_RD_* decompressor at all ("Initramfs
+    # unpacking failed: compression method gzip not configured")
+    INITRD_COMPRESS_DEFAULT=none
     ;;
   *) printf 'unsupported ZBM_ARCH: %s\n' "${ZBM_ARCH}" >&2; exit 1 ;;
 esac
@@ -96,7 +100,13 @@ EXTRA_IWLWIFI_PNVM="${EXTRA_IWLWIFI_PNVM:-${BUILDDIR}/downloads/${EXTRA_IWLWIFI_
 IB_DIR="${IB_DIR:-${BUILDDIR}/imagebuilder}"
 SDK_DIR="${SDK_DIR:-${BUILDDIR}/sdk}"
 FILES_DIR="${FILES_DIR:-${BUILDDIR}/files}"
-INITRD="${INITRD:-${BUILDDIR}/openwrt-zbm-initramfs.cpio.gz}"
+INITRD_COMPRESS="${INITRD_COMPRESS:-${INITRD_COMPRESS_DEFAULT}}"   # gzip | none
+case "${INITRD_COMPRESS}" in
+  gzip) INITRD_COMPRESS_CMD="gzip -9n" INITRD_SUFFIX=.cpio.gz ;;
+  none) INITRD_COMPRESS_CMD=cat INITRD_SUFFIX=.cpio ;;
+  *) printf 'unsupported INITRD_COMPRESS: %s\n' "${INITRD_COMPRESS}" >&2; exit 1 ;;
+esac
+INITRD="${INITRD:-${BUILDDIR}/openwrt-zbm-initramfs${INITRD_SUFFIX}}"
 
 log() {
   printf '[build-openwrt-imagebuilder-uki] %s\n' "$*"
@@ -939,7 +949,7 @@ create_initramfs() {
     mknod -m 666 dev/random c 1 8 2>/dev/null || true
     mknod -m 666 dev/urandom c 1 9 2>/dev/null || true
     mkdir -p dev/pts
-    find . -print0 | cpio --null -o -H newc --owner=0:0 | gzip -9n > '${INITRD}'
+    find . -print0 | cpio --null -o -H newc --owner=0:0 | ${INITRD_COMPRESS_CMD} > '${INITRD}'
   "
 }
 
@@ -1162,10 +1172,13 @@ validate_uki_initrd() {
   cp -f "${UKI}" "${work}/uki.efi"
   # the host's objcopy reads only its own architecture's PE files
   run "$([ "${ZBM_ARCH}" = x86_64 ] && echo objcopy || echo "${ZBM_ARCH}-linux-gnu-objcopy")" \
-    --dump-section ".initrd=${work}/initrd.gz" "${work}/uki.efi"
+    --dump-section ".initrd=${work}/initrd.img" "${work}/uki.efi"
   (
     cd "${work}/extract"
-    gzip -dc "${work}/initrd.gz" | cpio -id --quiet "${required_paths[@]}"
+    case "${INITRD_COMPRESS}" in
+      gzip) gzip -dc "${work}/initrd.img" ;;
+      none) cat "${work}/initrd.img" ;;
+    esac | cpio -id --quiet "${required_paths[@]}"
   )
 
   for path in "${required_paths[@]}"; do
