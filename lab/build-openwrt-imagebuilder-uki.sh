@@ -1149,7 +1149,9 @@ validate_uki_initrd() {
   fi
 
   cp -f "${UKI}" "${work}/uki.efi"
-  run objcopy --dump-section ".initrd=${work}/initrd.gz" "${work}/uki.efi"
+  # the host's objcopy reads only its own architecture's PE files
+  run "$([ "${ZBM_ARCH}" = x86_64 ] && echo objcopy || echo "${ZBM_ARCH}-linux-gnu-objcopy")" \
+    --dump-section ".initrd=${work}/initrd.gz" "${work}/uki.efi"
   (
     cd "${work}/extract"
     gzip -dc "${work}/initrd.gz" | cpio -id --quiet "${required_paths[@]}"
