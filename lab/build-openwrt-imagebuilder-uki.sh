@@ -860,7 +860,9 @@ filter_target_packages() {
   kept=() dropped=()
   for pkg in $1; do
     name="${pkg#-}"
-    if grep -qxF "${name}" "${avail}"; then kept+=("${pkg}"); else dropped+=("${pkg}"); fi
+    if grep -qxF "${name}" "${avail}"; then kept+=("${pkg}")
+    elif grep -qxF "${name}1" "${avail}"; then kept+=("${pkg%"${name}"}${name}1")   # libatomic -> libatomic1
+    else dropped+=("${pkg}"); fi
   done
   log "not available for ${ZBM_ARCH}, left out: ${dropped[*]:-none}" >&2
   printf '%s ' "${kept[@]}"
@@ -1008,8 +1010,11 @@ validate_rootfs() {
     "/lib/modules/${krel}/r8152.ko" \
     "/lib/modules/${krel}/spl.ko" \
     "/lib/modules/${krel}/zfs.ko" \
-    "/lib/modules/${krel}/tpm_crb.ko" \
-    "/lib/modules/${krel}/tpm_crb.good.ko"; do
+    $(if [ "${ZBM_ARCH}" = x86_64 ]; then
+        printf '%s ' "/lib/modules/${krel}/tpm_crb.ko" "/lib/modules/${krel}/tpm_crb.good.ko"
+      else
+        printf '%s ' "/lib/modules/${krel}/tpm_tis.ko" "/usr/sbin/kexec"
+      fi); do
     if [ ! -e "${rootdir}${path}" ] && [ ! -L "${rootdir}${path}" ]; then
       printf 'missing rootfs path: %s\n' "${path}" >&2
       missing=1
