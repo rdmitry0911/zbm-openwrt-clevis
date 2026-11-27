@@ -416,7 +416,12 @@ kexec_kernel() {
   cli_args="$( load_be_cmdline "${fs}" )"
   root_prefix="$( find_root_prefix "${fs}" "${mnt}" )"
 
-  if ! output="$( kexec -a --reuse-video-type -l "${mnt}${kernel}" \
+  # --reuse-video-type exists only in x86 kexec-tools (arm64's prints its
+  # usage and fails the load)
+  local video_arg=""
+  [ "$( uname -m )" = x86_64 ] && video_arg="--reuse-video-type"
+
+  if ! output="$( kexec -a ${video_arg} -l "${mnt}${kernel}" \
     --initrd="${mnt}${initramfs}" \
     --command-line="${root_prefix}${fs} ${cli_args}" 2>&1 )"
   then
