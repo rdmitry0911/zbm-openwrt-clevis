@@ -222,7 +222,10 @@ prepare_sdk_staging() {
     kbuild="$(find_sdk_kernel_dir || true)"
     target="$(find_sdk_target_dir || true)"
     toolchain="$(find_sdk_toolchain_dir || true)"
-    if [ -n "${kbuild}" ] && [ -n "${target}" ] && [ -n "${toolchain}" ] && [ -r "${kbuild}/Module.symvers" ]; then
+    # a fresh SDK already has the kernel and an (empty) target staging dir:
+    # also require the OpenZFS dependencies built into it
+    if [ -n "${kbuild}" ] && [ -n "${target}" ] && [ -n "${toolchain}" ] && [ -r "${kbuild}/Module.symvers" ] &&
+       [ -r "${target}/usr/include/zlib.h" ] && [ -r "${target}/usr/include/tirpc/rpc/rpc.h" ]; then
       log "using existing SDK staging/kernel build outputs"
       return 0
     fi
