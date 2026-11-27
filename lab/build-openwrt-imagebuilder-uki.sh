@@ -4,9 +4,35 @@ set -Eeuo pipefail
 TOPDIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 OPENWRT_VERSION="${OPENWRT_VERSION:-25.12.4}"
-OPENWRT_BASE_URL="${OPENWRT_BASE_URL:-https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/x86/64}"
-OPENWRT_IB_TARBALL="${OPENWRT_IB_TARBALL:-openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64.tar.zst}"
-OPENWRT_SDK_TARBALL="${OPENWRT_SDK_TARBALL:-openwrt-sdk-${OPENWRT_VERSION}-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst}"
+
+# Target architecture of the image: x86_64 (default) or aarch64 (OpenWrt armsr/armv8,
+# UEFI arm64 machines: servers, QEMU virt, Apple silicon through U-Boot).
+ZBM_ARCH="${ZBM_ARCH:-x86_64}"
+case "${ZBM_ARCH}" in
+  x86_64)
+    OWRT_TARGET=x86/64 OWRT_TARGET_DASH=x86-64 OWRT_SUBTARGET_DIR=linux-x86_64
+    OWRT_SDK_CONFIG='CONFIG_TARGET_x86=y
+CONFIG_TARGET_x86_64=y
+CONFIG_TARGET_x86_64_DEVICE_generic=y'
+    KERNEL_ARCH_NAME=x86 EFI_ARCH=x64 EFI_STUB_NAME=linuxx64.efi.stub
+    DONOR_LIBDIR=lib/x86_64-linux-gnu DONOR_LD=lib64/ld-linux-x86-64.so.2
+    TPM_EXTRA_MODULE=tpm_crb
+    ;;
+  aarch64)
+    OWRT_TARGET=armsr/armv8 OWRT_TARGET_DASH=armsr-armv8 OWRT_SUBTARGET_DIR=linux-armsr_armv8
+    OWRT_SDK_CONFIG='CONFIG_TARGET_armsr=y
+CONFIG_TARGET_armsr_armv8=y
+CONFIG_TARGET_armsr_armv8_DEVICE_generic=y'
+    KERNEL_ARCH_NAME=arm64 EFI_ARCH=aa64 EFI_STUB_NAME=linuxaa64.efi.stub
+    DONOR_LIBDIR=lib/aarch64-linux-gnu DONOR_LD=lib/ld-linux-aarch64.so.1
+    TPM_EXTRA_MODULE=
+    ;;
+  *) printf 'unsupported ZBM_ARCH: %s\n' "${ZBM_ARCH}" >&2; exit 1 ;;
+esac
+
+OPENWRT_BASE_URL="${OPENWRT_BASE_URL:-https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${OWRT_TARGET}}"
+OPENWRT_IB_TARBALL="${OPENWRT_IB_TARBALL:-openwrt-imagebuilder-${OPENWRT_VERSION}-${OWRT_TARGET_DASH}.Linux-x86_64.tar.zst}"
+OPENWRT_SDK_TARBALL="${OPENWRT_SDK_TARBALL:-openwrt-sdk-${OPENWRT_VERSION}-${OWRT_TARGET_DASH}_gcc-14.3.0_musl.Linux-x86_64.tar.zst}"
 
 ZFSBOOTMENU_REF="${ZFSBOOTMENU_REF:-v3.1.0}"
 ZFSBOOTMENU_REPO="${ZFSBOOTMENU_REPO:-https://github.com/zbm-dev/zfsbootmenu.git}"
@@ -26,20 +52,30 @@ if [ "${DEFAULT_JOBS}" -gt 6 ]; then
 fi
 JOBS="${JOBS:-${DEFAULT_JOBS}}"
 
-BUILDDIR="${BUILDDIR:-${TOPDIR}/dist/openwrt-imagebuilder-uki-build}"
+if [ "${ZBM_ARCH}" = x86_64 ]; then
+  BUILDDIR="${BUILDDIR:-${TOPDIR}/dist/openwrt-imagebuilder-uki-build}"
+else
+  BUILDDIR="${BUILDDIR:-${TOPDIR}/dist/openwrt-imagebuilder-uki-build-${ZBM_ARCH}}"
+fi
 SRCDIR="${SRCDIR:-${BUILDDIR}/src}"
 OUTDIR="${OUTDIR:-${TOPDIR}/dist}"
-UKI="${UKI:-${OUTDIR}/vmlinuz-openwrt-${OPENWRT_VERSION}-x86-64-generic-zbm-clevis-imagebuilder.efi}"
-STUB="${STUB:-/usr/lib/systemd/boot/efi/linuxx64.efi.stub}"
+UKI="${UKI:-${OUTDIR}/vmlinuz-openwrt-${OPENWRT_VERSION}-${OWRT_TARGET_DASH}-generic-zbm-clevis-imagebuilder.efi}"
+STUB="${STUB:-/usr/lib/systemd/boot/efi/${EFI_STUB_NAME}}"
 WORLD_REF="${WORLD_REF:-${TOPDIR}/lab/openwrt-current-world.txt}"
 OVERLAY_DIR="${OVERLAY_DIR:-${TOPDIR}/overlay}"
-HOST_TOOL_ROOTFS="${HOST_TOOL_ROOTFS:-/tmp/openwrt-zbm-rootfs}"
+if [ "${ZBM_ARCH}" = x86_64 ]; then
+  HOST_TOOL_ROOTFS="${HOST_TOOL_ROOTFS:-/tmp/openwrt-zbm-rootfs}"
+else
+  # Debian ${ZBM_ARCH} rootfs with the glibc tools (see make_donor_rootfs)
+  HOST_TOOL_ROOTFS="${HOST_TOOL_ROOTFS:-${BUILDDIR:-${TOPDIR}/dist/openwrt-imagebuilder-uki-build}/donor-${ZBM_ARCH}}"
+fi
 TPM_CRB_KO="${TPM_CRB_KO:-}"
 KEXEC_TOOLS_PATCH_DIR="${KEXEC_TOOLS_PATCH_DIR:-${TOPDIR}/patches/kexec-tools}"
 KEXEC_TOOLS_VERSION="${KEXEC_TOOLS_VERSION:-2.0.28}"
 KEXEC_TOOLS_URL="${KEXEC_TOOLS_URL:-https://cdn.kernel.org/pub/linux/utils/kernel/kexec/kexec-tools-${KEXEC_TOOLS_VERSION}.tar.xz}"
 KEXEC_TOOLS_HASH="${KEXEC_TOOLS_HASH:-d2f0ef872f39e2fe4b1b01feb62b0001383207239b9f8041f98a95564161d053}"
 PATCHED_KEXEC="${PATCHED_KEXEC:-${BUILDDIR}/kexec-tools-${KEXEC_TOOLS_VERSION}-patched/install/usr/sbin/kexec}"
+KEXEC_SYSROOT="${KEXEC_SYSROOT:-${BUILDDIR}/kexec-sysroot-${ZBM_ARCH}}"
 ZBM_SETFONT_SRC="${ZBM_SETFONT_SRC:-${TOPDIR}/tools/zbm-setfont.c}"
 ZBM_SETFONT="${ZBM_SETFONT:-${BUILDDIR}/zbm-setfont/setfont}"
 EXTRA_IWLWIFI_FIRMWARE_NAME="${EXTRA_IWLWIFI_FIRMWARE_NAME:-iwlwifi-so-a0-gf-a0-89.ucode}"
@@ -153,10 +189,8 @@ prepare_openwrt_tools() {
 
 sdk_write_config() {
   log "writing SDK config for OpenZFS build dependencies"
-  cat > "${SDK_DIR}/.config" <<'EOF'
-CONFIG_TARGET_x86=y
-CONFIG_TARGET_x86_64=y
-CONFIG_TARGET_x86_64_DEVICE_generic=y
+  printf '%s\n' "${OWRT_SDK_CONFIG}" > "${SDK_DIR}/.config"
+  cat >> "${SDK_DIR}/.config" <<'EOF'
 CONFIG_DEVEL=y
 CONFIG_PACKAGE_attr=y
 CONFIG_PACKAGE_libaio=y
@@ -210,15 +244,15 @@ prepare_sdk_staging() {
 }
 
 find_sdk_target_dir() {
-  find "${SDK_DIR}/staging_dir" -maxdepth 1 -type d -name 'target-x86_64_*' | sort | tail -n 1
+  find "${SDK_DIR}/staging_dir" -maxdepth 1 -type d -name 'target-'"${ZBM_ARCH}"'_*' | sort | tail -n 1
 }
 
 find_sdk_toolchain_dir() {
-  find "${SDK_DIR}/staging_dir" -maxdepth 1 -type d -name 'toolchain-x86_64_*' | sort | tail -n 1
+  find "${SDK_DIR}/staging_dir" -maxdepth 1 -type d -name 'toolchain-'"${ZBM_ARCH}"'_*' | sort | tail -n 1
 }
 
 find_sdk_kernel_dir() {
-  find "${SDK_DIR}/build_dir" -path '*/linux-x86_64/linux-*/Module.symvers' -type f -printf '%h\n' | sort -V | tail -n 1
+  find "${SDK_DIR}/build_dir" -path "*/${OWRT_SUBTARGET_DIR}/linux-*/Module.symvers" -type f -printf '%h\n' | sort -V | tail -n 1
 }
 
 sdk_cross_prefix() {
@@ -264,6 +298,11 @@ find_tpm_crb_ko() {
 install_extra_kernel_modules() {
   local krel ko dest
 
+  if [ -z "${TPM_EXTRA_MODULE}" ]; then
+    log "no extra TPM module for ${ZBM_ARCH} (kmod-tpm-tis comes from the package feed)"
+    return 0
+  fi
+
   krel="$(kernel_release)"
   if ! ko="$(find_tpm_crb_ko)"; then
     die "missing tpm_crb.ko; build it with CONFIG_TCG_CRB=m or set TPM_CRB_KO=/path/to/tpm_crb.ko"
@@ -304,21 +343,42 @@ build_patched_kexec() {
     ( cd "${builddir}" && patch -p1 < "${patch_file}" )
   done
 
+  if [ "${ZBM_ARCH}" != x86_64 ] && [ ! -e "${KEXEC_SYSROOT}/usr/include/zlib.h" ]; then
+    # zlib headers and libz.a of the target architecture for the cross build
+    log "creating ${ZBM_ARCH} zlib sysroot for kexec-tools"
+    rm -rf "${KEXEC_SYSROOT}"
+    debian_extract "$([ "${ZBM_ARCH}" = aarch64 ] && echo arm64 || echo "${ZBM_ARCH}")" zlib1g-dev "${KEXEC_SYSROOT}"
+  fi
   log "building patched kexec-tools ${KEXEC_TOOLS_VERSION}"
   (
     set -Eeuo pipefail
     cd "${builddir}"
-    ./configure \
-      --prefix=/usr \
-      --sbindir=/usr/sbin \
-      --without-zlib \
-      --without-lzma
+    if [ "${ZBM_ARCH}" = x86_64 ]; then
+      ./configure \
+        --prefix=/usr \
+        --sbindir=/usr/sbin \
+        --without-zlib \
+        --without-lzma
+    else
+      # glibc build like the x86 one (it runs on the donor's libraries); zlib
+      # linked in statically: arm64 kernels come as Image.gz / EFI zboot.
+      ./configure \
+        --host="${ZBM_ARCH}-linux-gnu" \
+        --prefix=/usr \
+        --sbindir=/usr/sbin \
+        --with-zlib \
+        --without-lzma \
+        CC="${ZBM_ARCH}-linux-gnu-gcc" \
+        CPPFLAGS="-I${KEXEC_SYSROOT}/usr/include -I${KEXEC_SYSROOT}/usr/include/${ZBM_ARCH}-linux-gnu" \
+        LDFLAGS="-L${KEXEC_SYSROOT}/usr/lib/${ZBM_ARCH}-linux-gnu" \
+        LIBS="-Wl,-Bstatic -lz -Wl,-Bdynamic"
+    fi
     make -j"${JOBS}"
     make DESTDIR="${install_dir}" install
   )
 
   [ -x "${PATCHED_KEXEC}" ] || die "patched kexec build did not produce ${PATCHED_KEXEC}"
-  strip --strip-unneeded "${PATCHED_KEXEC}"
+  if [ "${ZBM_ARCH}" = x86_64 ]; then strip --strip-unneeded "${PATCHED_KEXEC}"; else "${ZBM_ARCH}-linux-gnu-strip" --strip-unneeded "${PATCHED_KEXEC}"; fi
 }
 
 install_patched_kexec() {
@@ -454,12 +514,12 @@ build_openzfs() {
     export KERNEL_CC="${cross}gcc"
     export KERNEL_LD="${cross}ld"
     export KERNEL_CROSS_COMPILE="${cross}"
-    export KERNEL_ARCH="x86"
+    export KERNEL_ARCH="${KERNEL_ARCH_NAME}"
     cd "${builddir}"
     if [ ! -f Makefile ]; then
       "${src}/configure" \
         --build="${build_triplet}" \
-        --host=x86_64-openwrt-linux-musl \
+        --host="${ZBM_ARCH}-openwrt-linux-musl" \
         --prefix=/usr \
         --sbindir=/usr/sbin \
         --libdir=/usr/lib \
@@ -586,12 +646,63 @@ copy_donor_path() {
   cp -a "${src}" "${dst}"
 }
 
+debian_extract() {
+  # debian_extract DEBARCH PKG[,PKG...] DIR: unpack Debian packages with their
+  # dependencies into DIR, unprivileged: apt resolves and downloads into a
+  # private tree, dpkg-deb unpacks (no maintainer scripts, no emulation).
+  local debarch="$1" pkgs="$2" dir="$3" work kr suite
+  local -a A
+
+  need apt-get
+  need dpkg-deb
+  suite="${DONOR_SUITE:-trixie}"
+  kr="${DEBIAN_KEYRING:-/usr/share/keyrings/debian-archive-keyring.gpg}"
+  [ -r "${kr}" ] || die "missing Debian archive keyring ${kr} (set DEBIAN_KEYRING)"
+  work="${BUILDDIR}/apt-${debarch}"
+  rm -rf "${work}" "${dir}"
+  mkdir -p "${work}"/{etc/apt/preferences.d,etc/apt/sources.list.d,var/lib/apt/lists/partial,var/cache/apt/archives/partial,var/lib/dpkg} "${dir}"
+  : > "${work}/var/lib/dpkg/status"
+  cat > "${work}/etc/apt/sources.list" <<EOF
+deb [signed-by=${kr}] http://deb.debian.org/debian ${suite} main
+deb [signed-by=${kr}] http://deb.debian.org/debian ${suite}-updates main
+deb [signed-by=${kr}] http://security.debian.org/debian-security ${suite}-security main
+EOF
+  A=(-o Dir="${work}" -o Dir::State::status="${work}/var/lib/dpkg/status" -o Debug::NoLocking=1
+     -o APT::Architecture="${debarch}" -o APT::Architectures::="${debarch}" -o Acquire::Languages=none
+     -o APT::Install-Recommends=false -o Dir::Etc::trusted=/dev/null -o Dir::Etc::trustedparts=/nonexistent)
+  run apt-get "${A[@]}" update -qq
+  # shellcheck disable=SC2046
+  run apt-get "${A[@]}" install -y -qq --download-only $(printf '%s' "${pkgs}" | tr ',' ' ')
+  for deb in "${work}"/var/cache/apt/archives/*.deb; do
+    dpkg-deb -x "${deb}" "${dir}"
+  done
+}
+
+make_donor_rootfs() {
+  # The glibc tools Clevis/ZBM use (tpm2-tools, fzf, ...) with their libraries,
+  # from Debian packages of the target architecture. "extract" runs no
+  # maintainer scripts, so no emulation of the target CPU is needed.
+  local debarch suite
+
+  [ ! -d "${HOST_TOOL_ROOTFS}/${DONOR_LIBDIR}" ] || return 0
+  case "${ZBM_ARCH}" in aarch64) debarch=arm64 ;; *) debarch="${ZBM_ARCH}" ;; esac
+  suite="${DONOR_SUITE:-trixie}"
+  log "creating ${debarch} donor rootfs (Debian ${suite}) in ${HOST_TOOL_ROOTFS}"
+  debian_extract "${debarch}" libc6,tpm2-tools,fzf,mawk,coreutils,hostname,less "${HOST_TOOL_ROOTFS}"
+  # usrmerge layout: lib -> usr/lib
+  if [ ! -e "${HOST_TOOL_ROOTFS}/${DONOR_LIBDIR}" ] && [ -d "${HOST_TOOL_ROOTFS}/usr/${DONOR_LIBDIR}" ]; then
+    ln -s usr/lib "${HOST_TOOL_ROOTFS}/lib"
+  fi
+}
+
 install_donor_glibc_tools() {
   local tool fallback_root
 
+  [ "${ZBM_ARCH}" = x86_64 ] || make_donor_rootfs
+
   if [ ! -d "${HOST_TOOL_ROOTFS}" ]; then
     fallback_root="$(find_ib_rootfs_dir || true)"
-    if [ -n "${fallback_root}" ] && [ -d "${fallback_root}/lib/x86_64-linux-gnu" ]; then
+    if [ -n "${fallback_root}" ] && [ -d "${fallback_root}/${DONOR_LIBDIR}" ]; then
       log "HOST_TOOL_ROOTFS is missing; using previous ImageBuilder rootfs donor: ${fallback_root}"
       HOST_TOOL_ROOTFS="${fallback_root}"
     else
@@ -611,14 +722,15 @@ install_donor_glibc_tools() {
         done
   fi
 
-  if [ -d "${HOST_TOOL_ROOTFS}/lib/x86_64-linux-gnu" ]; then
+  if [ -d "${HOST_TOOL_ROOTFS}/${DONOR_LIBDIR}" ]; then
     mkdir -p "${FILES_DIR}/lib"
-    rm -rf "${FILES_DIR}/lib/x86_64-linux-gnu"
-    cp -a "${HOST_TOOL_ROOTFS}/lib/x86_64-linux-gnu" "${FILES_DIR}/lib/"
+    rm -rf "${FILES_DIR:?}/${DONOR_LIBDIR}"
+    cp -aL "${HOST_TOOL_ROOTFS}/${DONOR_LIBDIR}" "${FILES_DIR}/lib/" 2>/dev/null \
+      || cp -a "${HOST_TOOL_ROOTFS}/${DONOR_LIBDIR}" "${FILES_DIR}/lib/"
   fi
-  if [ -e "${HOST_TOOL_ROOTFS}/lib64/ld-linux-x86-64.so.2" ]; then
-    mkdir -p "${FILES_DIR}/lib64"
-    cp -a "${HOST_TOOL_ROOTFS}/lib64/ld-linux-x86-64.so.2" "${FILES_DIR}/lib64/"
+  if [ -e "${HOST_TOOL_ROOTFS}/${DONOR_LD}" ]; then
+    mkdir -p "${FILES_DIR}/$(dirname "${DONOR_LD}")"
+    cp -aL "${HOST_TOOL_ROOTFS}/${DONOR_LD}" "${FILES_DIR}/${DONOR_LD}"
   fi
 }
 
@@ -891,9 +1003,14 @@ validate_rootfs() {
 build_uki() {
   local kernel osrel cmdline krel
 
-  kernel="${IB_DIR}/bin/targets/x86/64/openwrt-${OPENWRT_VERSION}-x86-64-generic-kernel.bin"
+  kernel="${IB_DIR}/bin/targets/${OWRT_TARGET}/openwrt-${OPENWRT_VERSION}-${OWRT_TARGET_DASH}-generic-kernel.bin"
   [ -f "${kernel}" ] || die "missing Image Builder kernel: ${kernel}"
   [ -f "${INITRD}" ] || die "missing initramfs: ${INITRD}"
+  if [ ! -f "${STUB}" ] && [ "${ZBM_ARCH}" != x86_64 ]; then
+    # the target architecture's stub, from Debian's systemd-boot-efi
+    debian_extract "$([ "${ZBM_ARCH}" = aarch64 ] && echo arm64 || echo "${ZBM_ARCH}")" systemd-boot-efi "${BUILDDIR}/stub-root"
+    STUB="${BUILDDIR}/stub-root/usr/lib/systemd/boot/efi/${EFI_STUB_NAME}"
+  fi
   [ -f "${STUB}" ] || die "missing systemd EFI stub: ${STUB}"
 
   mkdir -p "${OUTDIR}" "${BUILDDIR}"
@@ -917,7 +1034,7 @@ EOF
     --os-release "@${osrel}" \
     --uname "${krel}" \
     --stub "${STUB}" \
-    --efi-arch x64 \
+    --efi-arch "${EFI_ARCH}" \
     --output "${UKI}"
 
   run ukify inspect "${UKI}"
@@ -935,17 +1052,25 @@ validate_uki_initrd() {
   rm -rf "${work}"
   mkdir -p "${work}/extract"
 
-  required_paths=(
-    "lib/modules/${krel}/tpm_crb.ko"
-    "lib/modules/${krel}/tpm_crb.good.ko"
-    "lib/modules/${krel}/atlantic.ko"
-    "lib/modules/${krel}/i40e.ko"
-    "lib/modules/${krel}/iavf.ko"
-    "lib/modules/${krel}/ice.ko"
-    "lib/modules/${krel}/ixgbe.ko"
-    "lib/modules/${krel}/ixgbevf.ko"
-    "lib/firmware/intel/ice/ddp/ice.pkg"
-  )
+  if [ "${ZBM_ARCH}" = x86_64 ]; then
+    required_paths=(
+      "lib/modules/${krel}/tpm_crb.ko"
+      "lib/modules/${krel}/tpm_crb.good.ko"
+      "lib/modules/${krel}/atlantic.ko"
+      "lib/modules/${krel}/i40e.ko"
+      "lib/modules/${krel}/iavf.ko"
+      "lib/modules/${krel}/ice.ko"
+      "lib/modules/${krel}/ixgbe.ko"
+      "lib/modules/${krel}/ixgbevf.ko"
+      "lib/firmware/intel/ice/ddp/ice.pkg"
+    )
+  else
+    required_paths=(
+      "lib/modules/${krel}/tpm_tis.ko"
+      "lib/modules/${krel}/nvme.ko"
+      "usr/sbin/kexec"
+    )
+  fi
 
   cp -f "${UKI}" "${work}/uki.efi"
   run objcopy --dump-section ".initrd=${work}/initrd.gz" "${work}/uki.efi"
