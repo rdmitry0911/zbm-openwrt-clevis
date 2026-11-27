@@ -851,6 +851,11 @@ build_imagebuilder_rootfs() {
 
   log "building Image Builder rootfs only"
   find "${IB_DIR}/build_dir" -maxdepth 2 -type d -name 'root-*' -prune -exec rm -rf {} +
+  # what "make image" creates before package_reload (a fresh Image Builder has none of it)
+  local tdir
+  tdir="$(find "${IB_DIR}/build_dir" -maxdepth 1 -type d -name 'target-*' | sort | tail -n 1)"
+  [ -n "${tdir}" ] || die "cannot locate Image Builder target build dir"
+  mkdir -p "${IB_DIR}/dl" "${IB_DIR}/tmp" "${IB_DIR}/bin" "${tdir}/root-${OWRT_TARGET%%/*}"
   run env STAGING_DIR_HOST="${IB_DIR}/staging_dir/host" make -C "${IB_DIR}" \
     USER_PROFILE=generic \
     USER_PACKAGES="${packages}" \
