@@ -63,7 +63,7 @@ UKI="${UKI:-${OUTDIR}/vmlinuz-openwrt-${OPENWRT_VERSION}-${OWRT_TARGET_DASH}-gen
 STUB="${STUB:-/usr/lib/systemd/boot/efi/${EFI_STUB_NAME}}"
 WORLD_REF="${WORLD_REF:-${TOPDIR}/lab/openwrt-current-world.txt}"
 OVERLAY_DIR="${OVERLAY_DIR:-${TOPDIR}/overlay}"
-if [ "${ZBM_ARCH}" = x86_64 ]; then
+if [ "${ZBM_ARCH}" = x86_64 ] && { [ -n "${HOST_TOOL_ROOTFS:-}" ] || [ -d /tmp/openwrt-zbm-rootfs ]; }; then
   HOST_TOOL_ROOTFS="${HOST_TOOL_ROOTFS:-/tmp/openwrt-zbm-rootfs}"
 else
   # Debian ${ZBM_ARCH} rootfs with the glibc tools (see make_donor_rootfs)
@@ -711,7 +711,7 @@ make_donor_rootfs() {
   local debarch suite
 
   [ ! -d "${HOST_TOOL_ROOTFS}/${DONOR_LIBDIR}" ] || return 0
-  case "${ZBM_ARCH}" in aarch64) debarch=arm64 ;; *) debarch="${ZBM_ARCH}" ;; esac
+  case "${ZBM_ARCH}" in aarch64) debarch=arm64 ;; x86_64) debarch=amd64 ;; *) debarch="${ZBM_ARCH}" ;; esac
   suite="${DONOR_SUITE:-trixie}"
   log "creating ${debarch} donor rootfs (Debian ${suite}) in ${HOST_TOOL_ROOTFS}"
   debian_extract "${debarch}" libc6,tpm2-tools,fzf,mawk,coreutils,hostname,less "${HOST_TOOL_ROOTFS}"
@@ -724,7 +724,7 @@ make_donor_rootfs() {
 install_donor_glibc_tools() {
   local tool fallback_root
 
-  [ "${ZBM_ARCH}" = x86_64 ] || make_donor_rootfs
+  make_donor_rootfs
 
   if [ ! -d "${HOST_TOOL_ROOTFS}" ]; then
     fallback_root="$(find_ib_rootfs_dir || true)"
